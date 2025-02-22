@@ -3,13 +3,11 @@ import pandas as pd
 import scipy.ndimage
 import os 
 import csv
-
-# in progress 
+from scipy.ndimage import median_filter
 
 """
 Algorithm implemented from "DETECTING STABLE REGIONS IN FREQUENCY TRAJECTORIES FOR
 TONAL ANALYSIS OF TRADITIONAL GEORGIAN VOCAL MUSIC" 
-
 """
 
 def filter_pitch_contour(file_path):
@@ -62,7 +60,7 @@ def morphological_filter(frequency, time, window_size = 43, threshold = 90):
 
     return filtered_trajectory, time_values
 
-def masking_filter(frequency_trajectory, time, R=10, beta=5, L=43):
+def masking_filter(frequency, time, R = 10, index = 5, window =43):
 
     """
     Applies a 2D-masking approach to detect stable pitch regions without using cv2.dilate.
@@ -77,30 +75,39 @@ def masking_filter(frequency_trajectory, time, R=10, beta=5, L=43):
     - filtered_trajectory: numpy array, stable pitch values (NaN where unstable)
     """
 
-    binned_freqs = np.round(frequency_trajectory / R).astype(int)
+    valid_mask = ~np.isnan(frequency)
 
-    binned_freqs = np.maximum(0, binned_freqs)  
+    binned_freq = np.full_like(frequency,np.nan, dtype = float)
 
-    if np.all(np.isnan(binned_freqs)):
-        max_bin = 1 
-    else:
-        max_bin = max(1, int(np.nanmax(binned_freqs)) + 1)
+    binned_freq[valid_mask] = np.round(frequency[valid_mask] / R).astype(int)
 
-    binary_mask = np.zeros((len(frequency_trajectory), max_bin), dtype=np.uint8)
+    max_bin = np.nanmax(binned_freq) + 1
+
+    binary_mask = np.zeros((len(frequency), int(max_bin)), dtype = np.uint8)
+
+    for i, b in enumerate(binned_freq):
+        if not np.isnan(b) and b >= 0:
+            binary_mask[i, int(b)] = 1
+
+    T, F = binary_mask.shape
+
+    binary_mask_copy = np.copy(binary_mask)
+
+    for t in range(T):
+        for f in range(F):
+            if binary_mask[t, f] == 1:
+                lower = max(0, f - index)
+                upper = min(F, f + index + 1)
     
-    for i, b in enumerate(binned_freqs):
-        if not np.isnan(b) and b < max_bin:  
-            binary_mask[i, b] = 1
+    binary_mask_copy = median_filter(binary_mask_copy, size = (43, 1), mode = 'nearest')
 
-    binary_mask = scipy.ndimage.maximum_filter1d(binary_mask, size=2 * beta + 1, axis=1, mode='nearest')
+    masked_frequency = np.full_like(frequency, np.nan, dtype = float)
 
-    for b in range(binary_mask.shape[1]):
-        binary_mask[:, b] = scipy.ndimage.median_filter(binary_mask[:, b], size=L)
+    for i, b in enumerate(binned_freq):
+        if not np.isnan(b) and binary_mask_copy[i, int(b)] == 1:
+            masked_frequency[i] = frequency[i]
 
-    stable_mask = np.any(binary_mask, axis=1)
-    filtered_trajectory = np.where(stable_mask, frequency_trajectory, np.nan)
-
-    return filtered_trajectory, time
+    return masked_frequency, time
 
 def main():
 
@@ -111,8 +118,10 @@ def main():
     masked_output_file_path = "Desktop/Pansori_2025_ISMIR/PansoriData/masked_filtered_pitch.csv"
 
     filtered_freq, time_values = filter_pitch_contour(file_path)
-    filtered_freq = freq_to_cent(filtered_freq)
-    morph_filtered_freq, time_values = morphological_filter(filtered_freq, time_values)
+
+    filtered_cent = freq_to_cent(filtered_freq)
+
+    morph_filtered_freq, time_values = morphological_filter(filtered_cent, time_values)
 
     masked_filtered_freq, masked_time_values = masking_filter(filtered_freq, time_values)
 

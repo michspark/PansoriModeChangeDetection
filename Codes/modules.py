@@ -10,7 +10,7 @@ class TransformerModel(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers = num_layers)
         self.fc_mode = nn.Linear(input_size, num_classes)
         self.fc_modulation = nn.Linear(input_size, 1)
-    
+
     def forward(self, x):
         x = self.transformer_encoder(x)
         x_mode = self.fc_mode(x.mean(dim = 1))
@@ -37,10 +37,9 @@ class CNNModel(nn.Module):
         x = F.relu(self.fc(x))
         x_mode = self.fc_mode(x)
 
-        return x_mode 
+        return x_mode
 
 def detect_mode_change(ujo_prob, gyemyeonjo_prob, threshold=0.05):
     mode_change = (np.abs(ujo_prob - gyemyeonjo_prob) < threshold).astype(int)
     return mode_change
 
-    

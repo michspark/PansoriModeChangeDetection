@@ -1,7 +1,7 @@
-import numpy as np 
-import pandas as pd 
+import numpy as np
+import pandas as pd
 import scipy.ndimage
-import os 
+import os
 import csv
 from scipy.ndimage import median_filter
 
@@ -14,11 +14,11 @@ def filter_pitch_contour(file_path):
 
     df = pd.read_csv(file_path, header = None)
     df.columns = ['Time', 'F0', 'Confidence']
-    
+
     df.loc[df["Confidence"] <= 0.7, "F0"] = np.nan
-    
+
     f0_values = df["F0"].to_numpy()
-    
+
     time_values = df["Time"].to_numpy()
 
     lower_bound = np.nanpercentile(f0_values, 5)
@@ -37,13 +37,13 @@ def morphological_filter(frequency, time, window_size = 43, threshold = 90):
     Applies morphological filtering to detect stable pitch regions
 
     Parameters:
-    - frequency = pitch values in cents 
-    - time = time values 
-    - window_size: window size 
-    - threshold: threshold in cents to define stability 
-    
+    - frequency = pitch values in cents
+    - time = time values
+    - window_size: window size
+    - threshold: threshold in cents to define stability
+
     Returns:
-    -filtered_pitch: numpy array, stable pitch values 
+    -filtered_pitch: numpy array, stable pitch values
 
     """
     gamma_max = scipy.ndimage.maximum_filter(frequency, size = window_size, mode = 'nearest')
@@ -56,7 +56,7 @@ def morphological_filter(frequency, time, window_size = 43, threshold = 90):
 
     filtered_trajectory = np.where(stable_mask, frequency, np.nan)
 
-    time_values = time 
+    time_values = time
 
     return filtered_trajectory, time_values
 
@@ -64,13 +64,13 @@ def masking_filter(frequency, time, R = 10, index = 5, window =43):
 
     """
     Applies a 2D-masking approach to detect stable pitch regions without using cv2.dilate.
-    
+
     Parameters:
     - frequency_trajectory: numpy array, pitch values in cents (with NaN for missing values)
     - R: frequency resolution in cents
     - beta: frequency tolerance (in bins)
     - L: window size for median filtering (odd integer)
-    
+
     Returns:
     - filtered_trajectory: numpy array, stable pitch values (NaN where unstable)
     """
@@ -98,7 +98,7 @@ def masking_filter(frequency, time, R = 10, index = 5, window =43):
             if binary_mask[t, f] == 1:
                 lower = max(0, f - index)
                 upper = min(F, f + index + 1)
-    
+
     binary_mask_copy = median_filter(binary_mask_copy, size = (43, 1), mode = 'nearest')
 
     masked_frequency = np.full_like(frequency, np.nan, dtype = float)

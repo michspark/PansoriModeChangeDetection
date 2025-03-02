@@ -5,6 +5,11 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import median_filter
 from collections import Counter
 
+
+'''
+Generate 5th interval Normalized based on 10 second split clip and full song clip to find tonic of the song
+
+'''
 def frequency_to_midi(frequency):
     return 69 + 12 * np.log2(frequency / 440)
 

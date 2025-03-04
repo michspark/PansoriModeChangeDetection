@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import median_filter
 from collections import Counter
 
-
 '''
 Generate 5th interval Normalized based on 10 second split clip and full song clip to find tonic of the song
 
 '''
+
 def frequency_to_midi(frequency):
     return 69 + 12 * np.log2(frequency / 440)
 
@@ -92,9 +92,9 @@ def get_histogram(midi_notes, bin_size=0.25, best_comp=0.0, best_tonic = 55):
     return hist, edges
 
 def main():
-    tonic_file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0/박봉술춘향가천자뒤풀이aggregated.csv'
-    file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0_Morph_Split_10/박봉술_춘향가_천자뒤풀이_우조'
-    output_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/Histogram/5th_int_morphed/박봉술_춘향가_천자뒤풀이_우조'
+    tonic_file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0/수궁가 중 소지노화(신만엽제)_Ujo.csv'
+    file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0_Masked_Split_10/수궁가_소지노화_우조'
+    output_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/Histogram/5th_int_masked/수궁가_소지노화_우조'
 
     os.makedirs(output_path, exist_ok=True)
 
@@ -111,7 +111,6 @@ def main():
             histogram, edges = get_histogram(midi_notes, best_comp = best_comp, best_tonic = best_tonic)
             save_file = os.path.join(output_path, f"{file_name.replace('.csv', '')}.npy")
             np.save(save_file, histogram)
-
 
 if __name__ == "__main__":
   main()

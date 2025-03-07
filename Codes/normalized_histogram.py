@@ -92,9 +92,9 @@ def get_histogram(midi_notes, bin_size=0.25, best_comp=0.0, best_tonic = 55):
     return hist, edges
 
 def main():
-    tonic_file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0/화초가(정춘풍제), 심청가_Ujo.csv'
-    file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0_Masked_Split_20/화초가_심청가_우조'
-    output_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/Histogram/5th_int_masked_20/화초가_심청가_우조'
+    tonic_file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0/적벽가장승타령aggregated.csv'
+    file_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/F0/F0_Masked_Split_30/적벽가_장승타령_관운장'
+    output_path = '/home/sangheon/Desktop/Pansori_2025_ISMIR/PansoriData/Histogram/5th_int_masked_30/적벽가_장승타령_관운장'
 
     os.makedirs(output_path, exist_ok=True)
 

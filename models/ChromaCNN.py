@@ -1,4 +1,4 @@
-from modules import ConvBlock
+from .modules import ConvBlock
 
 import torch.nn as nn
 

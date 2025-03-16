@@ -1,1 +1,2 @@
-from .datasets import datasets
+from .datasets import *
+from .models import *

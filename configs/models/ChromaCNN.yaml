@@ -1,4 +1,6 @@
-model:
+cls: ChromaCNN
+
+cfg:
   conv_layers: [32,'M',64,'M',128,'M']
   conv_in_channels: 1
   pool: (2,1)

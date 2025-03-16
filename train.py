@@ -33,8 +33,8 @@ def set_seed(seed=42):
 @hydra.main(config_path="configs", config_name="train")
 def main(cfg):
     run_name = f'{cfg.models.cls}'
-    # wandb.init(project='Pansori_Mode_Detection', name=run_name)
-    # wandb.config.update(OmegaConf.to_container(cfg))
+    wandb.init(project='Pansori_Mode_Detection', name=run_name)
+    wandb.config.update(OmegaConf.to_container(cfg))
 
     set_seed(cfg.train.random_seed)
 
@@ -61,20 +61,23 @@ def main(cfg):
     model = model_class(**model_params)
     model = nn.DataParallel(model) if torch.cuda.device_count() > 1 else model.to(DEV)
     num_model_parameters = sum(p.numel() for p in model.parameters())
-    # wandb.summary['Num model parameters'] = num_model_parameters
+    wandb.summary['Num model parameters'] = num_model_parameters
     print(f"Sum of Model Parameters: {num_model_parameters}")
 
+    criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=cfg.train.lr)
     kfold = KFold(**cfg.kfold)
 
-    # trainer = Trainer(model=model, 
-    #                   dataset=dataset, 
-    #                   optimizer=optimizer, 
-    #                   kfold=kfold, 
-    #                   save_dir=save_dir, 
-    #                   best_dir=best_dir,
-    #                   config=cfg)
-    # trainer.train()
+    trainer = Trainer(model=model, 
+                      dataset=dataset, 
+                      optimizer=optimizer,
+                      criterion=criterion,
+                      device=DEV, 
+                      kfold=kfold, 
+                      save_dir=save_dir, 
+                      best_dir=best_dir,
+                      config=cfg)
+    trainer.train()
 
     
 if __name__ == "__main__":

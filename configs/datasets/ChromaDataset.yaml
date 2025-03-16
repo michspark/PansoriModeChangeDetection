@@ -1,10 +1,11 @@
 dset: ChromaDataset
 
 cfg:
-  num_classes: 4
+  num_classes: 5
   sr: 16000
   channels: 'mono'
   window: 20
   n_fft: 2048
   hop_length: 512
   target_bins: 25
+  shift: True

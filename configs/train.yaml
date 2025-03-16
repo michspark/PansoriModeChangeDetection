@@ -3,7 +3,7 @@ hydra:
     dir: .
 
 defaults:
-  - models: ChromaCNN
+  - models: ChromaCNNLSTM
   - datasets: ChromaDataset
 
 data:
@@ -11,9 +11,9 @@ data:
   label_json: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/data/label.json"
 
 train:
-  lr: 1e-4
-  batch_size: 16
-  num_empochs: 50
+  lr: 5e-3
+  batch_size: 8
+  num_epochs: 100
   random_seed: 42
 
 kfold:

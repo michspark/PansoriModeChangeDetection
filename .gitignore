@@ -3,5 +3,7 @@
 
 pansori_venv/
 notebooks/
+
 .hydra/
 train/
+wandb/

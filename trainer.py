@@ -114,4 +114,4 @@ class Trainer():
                     torch.save(self.model.state_dict(), self.best_dir/f'fold{fold+1}_{self.num_updated}updated_best_model.pt')
                 if (epoch+1)%10==0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold+1}_epoch{epoch+1}_{self.num_updated}updated.pt')
 
-            print(f"Fold {fold+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")'
+            print(f"Fold {fold+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")

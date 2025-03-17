@@ -1,0 +1,9 @@
+.DS_Store
+*.wav
+
+pansori_venv/
+notebooks/
+
+.hydra/
+train/
+wandb/

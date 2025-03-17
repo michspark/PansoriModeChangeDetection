@@ -6,6 +6,6 @@ cfg:
   pool: (2,1)
   
   fc_layers: [64,'relu','D']
-  num_classes: 4
+  num_classes: 5
   fc_in_channels: 128*(25//8)
   dropout: 0.3

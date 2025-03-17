@@ -1,27 +1,26 @@
 import models
 import datasets
 from trainer import Trainer
+
 import random
 import datetime
 from pathlib import Path
+
 import numpy as np
-<<<<<<< HEAD
-from sklearn.model_selection import KFold
-from sklearn.model_selection import LeaveOneOut
-=======
 from tqdm import tqdm
 from sklearn.model_selection import KFold, LeaveOneOut
 
->>>>>>> jinin/opt
 import hydra
 import wandb
 from omegaconf import OmegaConf
+
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 
 #DEV = 'mps' if torch.mps.is_available() else 'cpu'
-DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu") #GPU setup for Sangheon
+#DEV = 'cuda' if torch.mps.is_available() else 'cpu'
+DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -61,24 +60,10 @@ def main(cfg):
     model_params = OmegaConf.to_container(cfg.models.cfg)
     model_class = getattr(models, model_name)
 
-<<<<<<< HEAD
-    criterion = nn.CrossEntropyLoss()
-    optimizer = Adam(model.parameters(), lr=cfg.train.lr)
-    kfold = KFold(**cfg.kfold)
-
-    trainer = Trainer(model=model,
-                      dataset=dataset,
-                      optimizer=optimizer,
+    trainer = Trainer(dataset=dataset,
                       criterion=criterion,
                       device=DEV,
-                      kfold=kfold,
                       save_dir=save_dir,
-=======
-    trainer = Trainer(dataset=dataset, 
-                      criterion=criterion,
-                      device=DEV,
-                      save_dir=save_dir, 
->>>>>>> jinin/opt
                       best_dir=best_dir,
                       config=cfg)
 
@@ -100,6 +85,7 @@ def main(cfg):
 
     print(f"KFold Average Accuracy: {sum(fold_best_acc.values())}")
     if wandb.run is not None: wandb.finish()
+
 
 if __name__ == "__main__":
     main()

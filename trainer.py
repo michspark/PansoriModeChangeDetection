@@ -1,7 +1,5 @@
 from io import BytesIO
 from pathlib import Path
-<<<<<<< HEAD
-=======
 
 import numpy as np
 from tqdm import tqdm
@@ -10,8 +8,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
 
->>>>>>> jinin/opt
 import wandb
+
 import torch
 
 class Trainer():
@@ -29,7 +27,7 @@ class Trainer():
 
         self.num_updated = 0
 
-    def load_segments(self, ids, mode = "train"):
+    def load_segments(self, ids):
         x, y = [], []
         for idx in ids:
             _, _, (_, _, duration) = self.dataset[idx]
@@ -44,11 +42,6 @@ class Trainer():
 
                 x.append(chroma)
                 y.append(label)
-
-                if mode == "valid":
-                    start_frame = int(num_segments * 0.25)
-                    end_frame = int(num_segments * 0.75 )
-
         x = torch.stack(x).to(self.device)
         y = torch.stack(y).to(self.device).argmax(dim=-1)
         return x, y
@@ -74,7 +67,7 @@ class Trainer():
         plt.xlabel('Predicted Label', size=16)
         plt.xticks(fontsize=12)
         plt.yticks(fontsize=12)
-        plt.tight_layout() 
+        plt.tight_layout()
         buf = BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
@@ -110,15 +103,9 @@ class Trainer():
         epoch_loss = total_loss / (len(train_x) // self.batch_size)
         epoch_frame_acc, epoch_acc = self.get_acc(all_outputs, all_labels)
         return epoch_loss, epoch_frame_acc, epoch_acc
-<<<<<<< HEAD
 
-    def evaluate(self, val_x, val_y):
-        self.model.eval()
-=======
-    
     def evaluate(self, val_x, val_y, model):
         model.eval()
->>>>>>> jinin/opt
         with torch.no_grad():
             val_output = model(val_x)
             val_loss = self.criterion(val_output.permute(0, 2, 1), val_y)
@@ -146,26 +133,6 @@ class Trainer():
                         "Valid Confusion Matrix": wandb.Image(Image.fromarray(val_cm))},
                         step=epoch)
 
-<<<<<<< HEAD
-            train_pbar = tqdm(range(self.num_epochs), desc=f"Fold {fold+1}")
-            for epoch in train_pbar:
-                train_x, train_y = self.load_segments(train_idx)
-
-                test_x, test_y = self.load_segments(test_idx)
-
-                train_loss, train_frame_acc, train_acc = self.train_epoch(train_x, train_y)
-                wandb.log({"Train Loss": train_loss,
-                            "Train Frame Acc": train_frame_acc,
-                            "Train Acc": train_acc},
-                            step=self.num_updated)
-                val_loss, val_frame_acc, val_acc = self.evaluate(test_x, test_y)
-                wandb.log({"Valid Loss":val_loss,
-                           "Valid Frame Acc":val_frame_acc,
-                           "Valid Acc":val_acc},
-                           step=self.num_updated)
-
-                self.num_updated += 1
-=======
             train_pbar.set_description(f"Fold {idx+1} | Epoch {epoch+1} | Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
             if val_acc > best_acc:
                 best_acc = val_acc
@@ -196,9 +163,8 @@ class Trainer():
     #                        "Valid Frame Acc":val_frame_acc,
     #                        "Valid Acc":val_acc},
     #                        step=self.num_updated)
-                
+
     #             self.num_updated += 1
->>>>>>> jinin/opt
 
     #             train_pbar.set_description(f"Fold {idx+1} | Epoch {epoch+1} | Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
     #             if val_acc > best_acc:

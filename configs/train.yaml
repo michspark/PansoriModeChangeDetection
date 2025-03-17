@@ -22,15 +22,10 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-<<<<<<< HEAD
 loocv:
   n_splits: 5
   shuffle: True
   random_state: ${train.random_seed}
-=======
-loo: None
-
->>>>>>> jinin/opt
 dir:
   save_dir: "/home/sangheon/Desktop/Pansori_2025_ISMIR/train/weights"
   best_dir: "/home/sangheon/Desktop/Pansori_2025_ISMIR/train/best_model"

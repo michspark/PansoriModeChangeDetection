@@ -6,15 +6,21 @@ from torchaudio.prototype.transforms import ChromaSpectrogram
 import os
 
 class ChromaDataset(AudioDataset):
-    def __init__(self, audio_dir, label_json, num_classes=4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=25, shift=True):
+    def __init__(self, audio_dir, label_json, num_classes=4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=25, shift=0.4):
         super().__init__(audio_dir, label_json, num_classes, sr, channels, window)
         self.hop_length = hop_length
         self.target_bins = target_bins
         self.window_frame = self.window * sr // hop_length
         self.chroma_cvt = ChromaSpectrogram(sample_rate=self.sr, n_fft=n_fft, hop_length=hop_length)
         self.loaded_chromas = self.get_chroma()
+<<<<<<< HEAD
         self.max_shift = self.target_bins//4 if shift else None
         self.audio_files = [f for f in os.listdir(audio_dir) if f.endswith('.wav') or f.endswith('.mp3')]
+=======
+        self.shift = shift
+        self.max_shift = self.target_bins//4 if self.shift > 0 else None
+
+>>>>>>> jinin/opt
 
     def get_chroma(self):
         chroma_dict = {}
@@ -27,8 +33,12 @@ class ChromaDataset(AudioDataset):
             chroma = chroma / max_values # 가장 강한 음높이 성분 => 1
             # expand chroma
             repeat = self.target_bins // chroma.shape[0] + 1
+<<<<<<< HEAD
             expanded_chroma = chroma.repeat_interleave(repeat, dim=0)
 
+=======
+            expanded_chroma = torch.tile(chroma, (repeat, 1))
+>>>>>>> jinin/opt
             chroma_dict[k] = expanded_chroma[:self.target_bins, :]
         return chroma_dict
 
@@ -58,11 +68,17 @@ class ChromaDataset(AudioDataset):
 
     def shift_chroma(self, chroma):
         if self.max_shift is None: return chroma
+<<<<<<< HEAD
         prob = 0.4
         if random.random() < prob:
             shift_amount = random.randint(0, self.max_shift)
             chroma = torch.roll(chroma, shifts=shift_amount, dims=0)
 
+=======
+        if random.random() < self.shift:
+            shift_amount = random.randint(0, self.max_shift) # 0일 경우 변형없는 형태로 반환
+            chroma = torch.roll(chroma, shifts=shift_amount, dims=0)
+>>>>>>> jinin/opt
         return chroma
 
     def get_start_time(self, filename, start_frame):
@@ -79,6 +95,7 @@ class ChromaDataset(AudioDataset):
             label = self.get_label(filename, start_frame)
             return chroma, label, (filename, start_frame, duration)
 
+<<<<<<< HEAD
         return chroma, label
 
 # def main():
@@ -172,3 +189,6 @@ class ChromaDataset(AudioDataset):
 #             return chroma, label, (filename, start_frame)
 
 #         return chroma, label
+=======
+        return chroma, label
+>>>>>>> jinin/opt

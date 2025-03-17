@@ -1,24 +1,20 @@
 import models
 import datasets
 from trainer import Trainer
-
 import random
 import datetime
 from pathlib import Path
-
 import numpy as np
 from sklearn.model_selection import KFold
-
 import hydra
 import wandb
 from omegaconf import OmegaConf
-
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 
-DEV = 'mps' if torch.mps.is_available() else 'cpu'
-# DEV = 'cuda' if torch.mps.is_available() else 'cpu'
+#DEV = 'mps' if torch.mps.is_available() else 'cpu'
+DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -50,7 +46,7 @@ def main(cfg):
     with open(best_dir/'config.yaml', 'w') as f: OmegaConf.save(cfg, f)
 
     dataset_name = cfg.datasets.dset
-    dataset_params = OmegaConf.to_container(cfg.datasets.cfg)    
+    dataset_params = OmegaConf.to_container(cfg.datasets.cfg)
     dataset_class = getattr(datasets, dataset_name)
     dataset = dataset_class(audio_dir, label_json, **dataset_params)
     print(f"Length of dataset: {len(dataset)}")
@@ -68,17 +64,16 @@ def main(cfg):
     optimizer = Adam(model.parameters(), lr=cfg.train.lr)
     kfold = KFold(**cfg.kfold)
 
-    trainer = Trainer(model=model, 
-                      dataset=dataset, 
+    trainer = Trainer(model=model,
+                      dataset=dataset,
                       optimizer=optimizer,
                       criterion=criterion,
-                      device=DEV, 
-                      kfold=kfold, 
-                      save_dir=save_dir, 
+                      device=DEV,
+                      kfold=kfold,
+                      save_dir=save_dir,
                       best_dir=best_dir,
                       config=cfg)
     trainer.train()
 
-    
 if __name__ == "__main__":
     main()

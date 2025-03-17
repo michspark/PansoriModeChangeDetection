@@ -3,12 +3,9 @@ import random
 import unicodedata
 from pathlib import Path
 from collections import defaultdict
-
 from tqdm import tqdm
-
 import torch
 from torch.utils.data import Dataset
-
 import torchaudio
 
 class AudioDataset(Dataset):
@@ -21,7 +18,6 @@ class AudioDataset(Dataset):
 
         self.loaded_filename, self.loaded_audio = self.get_audio(audio_dir, ext='.wav')
         self.label_dict = self.get_label_dict(label_json)
-        # self.label_map = {'계면조': 1, '우조': 2, '평조': 3, 'Unknown':0, '아니리': 0, '창조': 0, '설렁제': 0}
         self.label_map = {"Unknown":0, "창조":0, "설렁제":0, "경드름": 0, "우조": 1, "계면조": 2, "평조": 3, "아니리": 4}
 
     def get_audio(self, audio_dir, ext=".wav"):
@@ -29,7 +25,7 @@ class AudioDataset(Dataset):
         지정된 디렉터리에서 특정 확장자의 오디오 파일을 로드
         Args:
             directory_path (str or Path): 오디오 파일이 있는 디렉터리 경로
-            file_extension (str): 대상 확장자        
+            file_extension (str): 대상 확장자
         Returns:
             dict: 파일명을 키로, 로드된 오디오 데이터를 값으로 하는 딕셔너리
         """
@@ -53,13 +49,13 @@ class AudioDataset(Dataset):
     def get_label_dict(self, label_json):
         """
         json 파일에서 filename, start, end, label 정보 추출
-        Args: json_file_path: JSON 파일 경로        
+        Args: json_file_path: JSON 파일 경로
         Returns: defaultdict: 파일명을 키로, [start, end, label] 리스트를 값으로 하는 defaultdict
         """
         label_dict = defaultdict(list)
         with open(label_json, 'r', encoding='utf-8') as file: label_data = json.load(file)
 
-        for idx, item in enumerate(tqdm(label_data, desc='Load Label')): 
+        for idx, item in enumerate(tqdm(label_data, desc='Load Label')):
             filename = "-".join(item["file_upload"].split(".")[0].split("-")[1:])
             filename = unicodedata.normalize('NFC', filename)
             if filename not in self.loaded_filename: continue
@@ -84,28 +80,28 @@ class AudioDataset(Dataset):
         for sec_idx in range(self.window):
             start_sec = start + sec_idx
             end_sec = start_sec + 1
-            
+
             overlap_ratios = {'Unknown': 1.0}
-            
+
             for ant in label_ant:
                 start_ant, end_ant = ant['start'], ant['end']
                 label_name = ant['label']
-                
+
                 if end_ant <= start_sec or start_ant >= end_sec: continue
 
                 overlap_start = max(start_sec, start_ant)
                 overlap_end = min(end_sec, end_ant)
                 overlap_duration = overlap_end - overlap_start
-                
+
                 if overlap_duration > 0:
                     if label_name not in overlap_ratios: overlap_ratios[label_name] = 0.0
-                    
+
                     overlap_ratios[label_name] += overlap_duration
                     overlap_ratios['Unknown'] -= overlap_duration
-            
+
             overlap_ratios['Unknown'] = max(0, overlap_ratios['Unknown'])
             max_label = max(overlap_ratios, key=overlap_ratios.get)
-            
+
             if max_label == 'Unknown': labels[sec_idx, self.label_map['Unknown']] = 1
             else: labels[sec_idx, self.label_map[max_label]] = 1
 
@@ -113,7 +109,7 @@ class AudioDataset(Dataset):
 
     def __len__(self):
         return len(self.loaded_audio)
-    
+
     def __getitem__(self, idx):
         filename = self.loaded_filename[idx]
         audio, label = self.loaded_audio[filename], self.label_dict[filename]

@@ -7,8 +7,8 @@ defaults:
   - datasets: ChromaDataset
 
 data:
-  audio_dir: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/data/Audio"
-  label_json: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/data/label.json"
+  audio_dir: "/home/sangheon/Desktop/Pansori/Audio"
+  label_json: "/home/sangheon/Desktop/Pansori_2025_ISMIR/data/label.json"
 
 train:
   lr: 5e-3
@@ -22,5 +22,5 @@ kfold:
   random_state: ${train.random_seed}
 
 dir:
-  save_dir: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/train/weights"
-  best_dir: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/train/best_model"
+  save_dir: "/home/sangheon/Desktop/Pansori_2025_ISMIR/train/weights"
+  best_dir: "/home/sangheon/Desktop/Pansori_2025_ISMIR/train/best_model"

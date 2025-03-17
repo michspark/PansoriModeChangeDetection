@@ -14,13 +14,13 @@ class ChromaDataset(AudioDataset):
         self.window_frame = self.window * sr // hop_length
         self.chroma_cvt = ChromaSpectrogram(sample_rate=self.sr, n_fft=n_fft, hop_length=hop_length)
         self.loaded_chromas = self.get_chroma()
-        self.max_shift = self.target_bins//2 if shift else None
-
+        self.max_shift = self.target_bins//4 if shift else None
 
     def get_chroma(self):
         chroma_dict = {}
         for k, v in tqdm(self.loaded_audio.items(), desc='Load Chromagram'):
             chroma = self.chroma_cvt(v).squeeze(0)
+
             # librosa 구현형
             max_values, _ = torch.max(chroma, dim=0, keepdim=True)
             max_values[max_values == 0] = 1.0 # 최댓값이 0인 경우 => 1
@@ -28,7 +28,7 @@ class ChromaDataset(AudioDataset):
             # expand chroma
             repeat = self.target_bins // chroma.shape[0] + 1
             expanded_chroma = chroma.repeat_interleave(repeat, dim=0)
-            
+
             chroma_dict[k] = expanded_chroma[:self.target_bins, :]
         return chroma_dict
 
@@ -56,12 +56,14 @@ class ChromaDataset(AudioDataset):
                     labels[segment_start_idx:segment_end_idx, label_idx] = 1
         return labels
 
-
     def shift_chroma(self, chroma):
         if self.max_shift is None: return chroma
-        shift_amount = random.randint(0, self.max_shift) # 0일 경우 변형없는 형태로 반환
-        shifted_chroma = torch.roll(chroma, shifts=shift_amount, dims=0)
-        return shifted_chroma
+        prob = 0.4
+        if random.random() < prob:
+            shift_amount = random.randint(0, self.max_shift) # 0일 경우 변형없는 형태로 반환
+            chroma = torch.roll(chroma, shifts=shift_amount, dims=0)
+
+        return chroma
 
     def get_start_time(self, filename, start_frame):
         return start_frame*(self.loaded_audio[filename].shape[1]/self.sr)/self.loaded_chromas[filename].shape[1]
@@ -79,7 +81,6 @@ class ChromaDataset(AudioDataset):
 
         return chroma, label
 
-
 # def main():
 #     audio_dir = "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/data/Audio"
 #     label_json = "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/data/label.json"
@@ -93,8 +94,6 @@ class ChromaDataset(AudioDataset):
 # if __name__=="__main__":
 #     main()
 
-
-
 # class ChromaDataset(AudioDataset):
 #     def __init__(self, audio_dir, label_json, num_classes=4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=25):
 #         super().__init__(audio_dir, label_json, num_classes, sr, channels, window)
@@ -103,7 +102,6 @@ class ChromaDataset(AudioDataset):
 #         self.window_frame = self.window * sr // hop_length
 #         self.chroma_cvt = ChromaSpectrogram(sample_rate=self.sr, n_fft=n_fft, hop_length=hop_length)
 #         self.loaded_chromas = self.get_chroma()
-
 
 #     def get_chroma(self):
 #         chroma_dict = {}
@@ -116,7 +114,7 @@ class ChromaDataset(AudioDataset):
 #             # expand chroma
 #             repeat = self.target_bins // chroma.shape[0] + 1
 #             expanded_chroma = chroma.repeat_interleave(repeat, dim=0)
-            
+
 #             chroma_dict[k] = expanded_chroma[:self.target_bins, :]
 #         return chroma_dict
 
@@ -144,16 +142,16 @@ class ChromaDataset(AudioDataset):
 #                 overlap_start = max(start_frame, start_ant)
 #                 overlap_end = min(end_frame, end_ant)
 #                 overlap_duration = overlap_end - overlap_start
-                
+
 #                 if overlap_duration > 0:
 #                     if label_name not in overlap_ratios: overlap_ratios[label_name] = 0.0
-                    
+
 #                     overlap_ratios[label_name] += overlap_duration
 #                     overlap_ratios['Unknown'] -= overlap_duration
-            
+
 #             overlap_ratios['Unknown'] = max(0, overlap_ratios['Unknown'])
 #             max_label = max(overlap_ratios, key=overlap_ratios.get)
-            
+
 #             if max_label == 'Unknown': labels[frame_idx, self.label_map['Unknown']] = 1
 #             else: labels[frame_idx, self.label_map[max_label]] = 1
 

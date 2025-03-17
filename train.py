@@ -6,6 +6,7 @@ import datetime
 from pathlib import Path
 import numpy as np
 from sklearn.model_selection import KFold
+from sklearn.model_selection import LeaveOneOut
 import hydra
 import wandb
 from omegaconf import OmegaConf
@@ -14,7 +15,7 @@ import torch.nn as nn
 from torch.optim import Adam
 
 #DEV = 'mps' if torch.mps.is_available() else 'cpu'
-DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu") #GPU setup for Sangheon
 
 def set_seed(seed=42):
     random.seed(seed)

@@ -1,8 +1,6 @@
 from tqdm import tqdm
 from pathlib import Path
-
 import wandb
-
 import torch
 
 class Trainer():
@@ -23,18 +21,23 @@ class Trainer():
 
         self.num_updated = 0
 
-    def load_segments(self, ids):
+    def load_segments(self, ids, mode = "train"):
         x, y = [], []
         for idx in ids:
             _, _, (_, _, duration) = self.dataset[idx]
             num_segments = int(duration // self.dataset.window)
-            
+
             for i in range(num_segments):
                 chroma, label, _ = self.dataset[idx]
                 chroma = torch.tensor(chroma, dtype=torch.float32).unsqueeze(0)
                 label = torch.tensor(label, dtype=torch.float32)
                 x.append(chroma)
-                y.append(label)        
+                y.append(label)
+
+                if mode == "valid":
+                    start_frame = int(num_segments * 0.25)
+                    end_frame = int(num_segments * 0.75 )
+
         x = torch.stack(x).to(self.device)
         y = torch.stack(y).to(self.device).argmax(dim=-1)
         return x, y
@@ -51,7 +54,7 @@ class Trainer():
 
         ids = torch.randperm(len(train_x))
         train_x, train_y = train_x[ids], train_y[ids]
-        
+
         all_outputs, all_labels = [], []
 
         for i in range(0, len(train_x), self.batch_size):
@@ -70,7 +73,7 @@ class Trainer():
         epoch_loss = total_loss / (len(train_x) // self.batch_size)
         epoch_frame_acc, epoch_acc = self.get_acc(all_outputs, all_labels)
         return epoch_loss, epoch_frame_acc, epoch_acc
-    
+
     def evaluate(self, val_x, val_y):
         self.model.eval()
         with torch.no_grad():
@@ -88,6 +91,7 @@ class Trainer():
             train_pbar = tqdm(range(self.num_epochs), desc=f"Fold {fold+1}")
             for epoch in train_pbar:
                 train_x, train_y = self.load_segments(train_idx)
+
                 test_x, test_y = self.load_segments(test_idx)
 
                 train_loss, train_frame_acc, train_acc = self.train_epoch(train_x, train_y)
@@ -100,7 +104,7 @@ class Trainer():
                            "Valid Frame Acc":val_frame_acc,
                            "Valid Acc":val_acc},
                            step=self.num_updated)
-                
+
                 self.num_updated += 1
 
                 train_pbar.set_description(f"Fold {fold+1} | Epoch {epoch+1} | Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
@@ -110,4 +114,4 @@ class Trainer():
                     torch.save(self.model.state_dict(), self.best_dir/f'fold{fold+1}_{self.num_updated}updated_best_model.pt')
                 if (epoch+1)%10==0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold+1}_epoch{epoch+1}_{self.num_updated}updated.pt')
 
-            print(f"Fold {fold+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")
+            print(f"Fold {fold+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")'

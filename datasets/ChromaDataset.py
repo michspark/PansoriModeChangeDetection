@@ -1,10 +1,9 @@
 from .AudioDataset import AudioDataset
-
 import random
 from tqdm import tqdm
-
 import torch
 from torchaudio.prototype.transforms import ChromaSpectrogram
+import os
 
 class ChromaDataset(AudioDataset):
     def __init__(self, audio_dir, label_json, num_classes=4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=25, shift=True):
@@ -15,6 +14,7 @@ class ChromaDataset(AudioDataset):
         self.chroma_cvt = ChromaSpectrogram(sample_rate=self.sr, n_fft=n_fft, hop_length=hop_length)
         self.loaded_chromas = self.get_chroma()
         self.max_shift = self.target_bins//4 if shift else None
+        self.audio_files = [f for f in os.listdir(audio_dir) if f.endswith('.wav') or f.endswith('.mp3')]
 
     def get_chroma(self):
         chroma_dict = {}
@@ -60,7 +60,7 @@ class ChromaDataset(AudioDataset):
         if self.max_shift is None: return chroma
         prob = 0.4
         if random.random() < prob:
-            shift_amount = random.randint(0, self.max_shift) # 0일 경우 변형없는 형태로 반환
+            shift_amount = random.randint(0, self.max_shift)
             chroma = torch.roll(chroma, shifts=shift_amount, dims=0)
 
         return chroma

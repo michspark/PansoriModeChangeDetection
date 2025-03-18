@@ -15,7 +15,6 @@ class AudioDataset(Dataset):
         self.window = window
         self.channels = channels
         self.num_classes = num_classes
-
         self.loaded_filename, self.loaded_audio = self.get_audio(audio_dir, ext='.wav')
         self.label_dict = self.get_label_dict(label_json)
         self.label_map = {"Unknown":0, "창조":0, "설렁제":0, "경드름": 0, "우조": 1, "계면조": 2, "평조": 3, "아니리": 4}
@@ -50,7 +49,7 @@ class AudioDataset(Dataset):
         """
         json 파일에서 filename, start, end, label 정보 추출
         Args: json_file_path: JSON 파일 경로
-        Returns: defaultdict: 파일명을 키로, [start, end, label] 리스트를 값으로 하는 defaultdict
+        Returns: defaultdict: 파일명을 키로, [start, end, label] 리스트를 값으로 하는 default dict
         """
         label_dict = defaultdict(list)
         with open(label_json, 'r', encoding='utf-8') as file: label_data = json.load(file)

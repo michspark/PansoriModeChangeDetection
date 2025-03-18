@@ -54,7 +54,7 @@ def main(cfg):
     print(f"Length of dataset: {len(dataset)}")
 
     criterion = nn.CrossEntropyLoss()
-    selection = KFold(**cfg.kfold) if cfg.train.selection=="KFold" else LeaveOneOut(**cfg.loo)
+    selection = KFold(**cfg.kfold) if cfg.train.selection == "KFold" else LeaveOneOut()
 
     model_name = cfg.models.cls
     model_params = OmegaConf.to_container(cfg.models.cfg)
@@ -70,9 +70,14 @@ def main(cfg):
     fold_best_acc = {}
     for idx, (train_idx, test_idx) in enumerate(selection.split(range(len(trainer.dataset)))):
         if wandb.run is not None: wandb.finish()
+        test_idx = test_idx[0]
+        test_filename = trainer.dataset.audio_files[test_idx]
+        print(f"LOOCV Validation File: {test_filename}")
+
         run_name = f'{cfg.models.cls}_Fold{idx+1}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
-        wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit=True)
+        wandb.init(project='Pansori_Mode_Detection', name=f'{cfg.models.cls}_LOOCV_Sample{test_idx}_{datetime.datetime.now().strftime("%m%d_%H%M")}', reinit=True)
         wandb.config.update(OmegaConf.to_container(cfg))
+        wandb.log({"Validation File": test_filename})
 
         model = model_class(**model_params)
         model = nn.DataParallel(model) if torch.cuda.device_count() > 1 else model.to(DEV)

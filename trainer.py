@@ -1,15 +1,12 @@
 from io import BytesIO
 from pathlib import Path
-
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
-
 import wandb
-
 import torch
 
 class Trainer():
@@ -44,6 +41,7 @@ class Trainer():
                 y.append(label)
         x = torch.stack(x).to(self.device)
         y = torch.stack(y).to(self.device).argmax(dim=-1)
+
         return x, y
 
     def get_acc(self, output, y):
@@ -117,7 +115,9 @@ class Trainer():
         print(f"{'='*25}{idx+1} Fold{'='*25}")
         best_acc, best_epoch = 0, 0
         test_x, test_y = self.load_segments(test_idx) # segment 고정
-
+        
+        filename = self.dataset.audio_files[test_idx]
+        print(f"LOOCV Validation File: {filename}")
         train_pbar = tqdm(range(self.num_epochs), desc=f"Fold {idx+1}")
         for epoch in train_pbar:
             train_x, train_y = self.load_segments(train_idx)

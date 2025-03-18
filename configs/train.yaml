@@ -15,17 +15,15 @@ train:
   batch_size: 8
   num_epochs: 50
   random_seed: 42
-  selection: KFold
+  selection: LOO
 
 kfold:
   n_splits: 5
   shuffle: True
   random_state: ${train.random_seed}
 
-loocv:
-  n_splits: 5
-  shuffle: True
-  random_state: ${train.random_seed}
+loocv: {}
+
 dir:
   save_dir: "/home/sangheon/Desktop/Pansori_2025_ISMIR/train/weights"
   best_dir: "/home/sangheon/Desktop/Pansori_2025_ISMIR/train/best_model"

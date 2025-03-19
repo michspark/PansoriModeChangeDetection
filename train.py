@@ -18,8 +18,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 
-#DEV = 'mps' if torch.mps.is_available() else 'cpu'
-#DEV = 'cuda' if torch.mps.is_available() else 'cpu'
+# DEV = 'mps' if torch.mps.is_available() else 'cpu'
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def set_seed(seed=42):
@@ -54,7 +53,7 @@ def main(cfg):
     print(f"Length of dataset: {len(dataset)}")
 
     criterion = nn.CrossEntropyLoss()
-    selection = KFold(**cfg.kfold) if cfg.train.selection == "KFold" else LeaveOneOut()
+    selection = KFold(**cfg.kfold) if cfg.train.selection=="KFold" else LeaveOneOut(**cfg.loo)
 
     model_name = cfg.models.cls
     model_params = OmegaConf.to_container(cfg.models.cfg)
@@ -70,14 +69,9 @@ def main(cfg):
     fold_best_acc = {}
     for idx, (train_idx, test_idx) in enumerate(selection.split(range(len(trainer.dataset)))):
         if wandb.run is not None: wandb.finish()
-        test_idx = test_idx[0]
-        test_filename = trainer.dataset.audio_files[test_idx]
-        print(f"LOOCV Validation File: {test_filename}")
-
         run_name = f'{cfg.models.cls}_Fold{idx+1}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
-        wandb.init(project='Pansori_Mode_Detection', name=f'{cfg.models.cls}_LOOCV_Sample{test_idx}_{datetime.datetime.now().strftime("%m%d_%H%M")}', reinit=True)
+        wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit=True)
         wandb.config.update(OmegaConf.to_container(cfg))
-        wandb.log({"Validation File": test_filename})
 
         model = model_class(**model_params)
         model = nn.DataParallel(model) if torch.cuda.device_count() > 1 else model.to(DEV)
@@ -86,7 +80,9 @@ def main(cfg):
 
         optimizer = Adam(model.parameters(), lr=cfg.train.lr)
 
-        fold_best_acc[idx] = trainer.train_split(idx, train_idx, test_idx, model, optimizer)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 0.5)
+
+        fold_best_acc[idx] = trainer.train_split(idx, train_idx, test_idx, model, optimizer, scheduler)
 
     print(f"KFold Average Accuracy: {sum(fold_best_acc.values())}")
     if wandb.run is not None: wandb.finish()

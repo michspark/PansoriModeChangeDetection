@@ -54,11 +54,12 @@ class ChromaDataset(AudioDataset):
                     labels[segment_start_idx:segment_end_idx, self.label_map['Unknown']] = 0
                     label_idx = self.label_map.get(ant['label'], self.label_map['Unknown'])
                     labels[segment_start_idx:segment_end_idx, label_idx] = 1
+
         return labels
 
     def shift_chroma(self, chroma):
         if self.max_shift is None: return chroma
-        prob = 0.4
+        prob = 0.8
         if random.random() < prob:
             shift_amount = random.randint(0, self.max_shift)
             chroma = torch.roll(chroma, shifts=shift_amount, dims=0)

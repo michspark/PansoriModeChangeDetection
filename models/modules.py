@@ -14,4 +14,36 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         return self.activation(self.bn(self.conv(x)))
 
-    
+class KrauseConvBlock2D(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, dilation):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels = in_channels,
+                              out_channels = out_channels,
+                              kernel_size = kernel_size,
+                              padding = 'same',
+                              stride = stride,
+                              dilation = dilation)
+
+        self.bn1 = nn.BatchNorm2d(num_features=out_channels)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        x = self.activation(self.bn1(self.conv1(x)))
+        return x
+
+class KrauseConvBlock1D(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, dilation):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_channels = in_channels,
+                              out_channels = out_channels,
+                              kernel_size = kernel_size,
+                              padding= 'same',
+                              stride = 1,
+                              dilation = dilation)
+
+        self.bn1 = nn.BatchNorm1d(num_features=out_channels)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        x = self.activation(self.bn1(self.conv1(x)))
+        return x

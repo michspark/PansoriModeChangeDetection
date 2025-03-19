@@ -4,8 +4,11 @@ cfg:
   conv_layers: [32,'M',64,'M',128,'M']
   conv_in_channels: 1
   pool: (2,1)
-  
+
   fc_layers: [64,'relu','D']
   num_classes: 5
   fc_in_channels: 128*2
   dropout: 0.3
+
+
+

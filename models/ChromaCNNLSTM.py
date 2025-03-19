@@ -1,5 +1,4 @@
 from .modules import ConvBlock
-
 import torch.nn as nn
 
 class ChromaCNNLSTM(nn.Module):
@@ -12,9 +11,9 @@ class ChromaCNNLSTM(nn.Module):
     def get_conv_layers(self, conv_layers, in_channels, pool):
         layers = []
         for val in conv_layers:
-            if val=="M": 
+            if val=="M":
                 layers.append(nn.MaxPool2d(kernel_size=eval(pool)))
-            else: 
+            else:
                 layers.append(ConvBlock(in_channels=in_channels, out_channels=val))
                 in_channels = val
         return nn.ModuleList(layers)
@@ -31,7 +30,7 @@ class ChromaCNNLSTM(nn.Module):
                 in_channels = val
         layers.append(nn.Linear(in_features=in_channels, out_features=num_classes))
         return nn.ModuleList(layers)
-    
+
     def forward(self, x):
         for layer in self.conv_layers: x = layer(x)
         b, c, f, t = x.shape

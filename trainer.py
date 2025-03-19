@@ -1,12 +1,15 @@
 from io import BytesIO
 from pathlib import Path
+
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
+
 import wandb
+
 import torch
 
 class Trainer():
@@ -41,7 +44,6 @@ class Trainer():
                 y.append(label)
         x = torch.stack(x).to(self.device)
         y = torch.stack(y).to(self.device).argmax(dim=-1)
-
         return x, y
 
     def get_acc(self, output, y):
@@ -75,7 +77,6 @@ class Trainer():
         buf.close()
         return image_np
 
-
     def train_epoch(self, train_x, train_y, model, optimizer):
         model.train()
         total_loss = 0
@@ -89,6 +90,7 @@ class Trainer():
             batch_x, batch_y = train_x[i:i+self.batch_size], train_y[i:i+self.batch_size]
             optimizer.zero_grad()
             outputs = model(batch_x)
+
             loss = self.criterion(outputs.permute(0, 2, 1), batch_y)
             loss.backward()
             optimizer.step()
@@ -111,14 +113,13 @@ class Trainer():
             val_cm = self.plot_confusion_matrix(val_output, val_y, range(self.dataset.num_classes))
         return val_loss.item(), frame_acc, acc, val_cm
 
-    def train_split(self, idx, train_idx, test_idx, model, optimizer):
+    def train_split(self, idx, train_idx, test_idx, model, optimizer, scheduler):
         print(f"{'='*25}{idx+1} Fold{'='*25}")
         best_acc, best_epoch = 0, 0
         test_x, test_y = self.load_segments(test_idx) # segment 고정
-        
-        filename = self.dataset.audio_files[test_idx]
-        print(f"LOOCV Validation File: {filename}")
+
         train_pbar = tqdm(range(self.num_epochs), desc=f"Fold {idx+1}")
+
         for epoch in train_pbar:
             train_x, train_y = self.load_segments(train_idx)
             train_loss, train_frame_acc, train_acc = self.train_epoch(train_x, train_y, model, optimizer)
@@ -126,6 +127,9 @@ class Trainer():
                         "Train Frame Acc": train_frame_acc,
                         "Train Acc": train_acc},
                         step=epoch)
+
+            scheduler.step()
+
             val_loss, val_frame_acc, val_acc, val_cm = self.evaluate(test_x, test_y, model)
             wandb.log({"Valid Loss":val_loss,
                         "Valid Frame Acc":val_frame_acc,
@@ -139,6 +143,7 @@ class Trainer():
                 best_epoch = epoch
                 torch.save(model.state_dict(), self.best_dir/f'fold{idx+1}_{best_epoch+1}epochs_best_model.pt')
             if (epoch+1)%10==0: torch.save(model.state_dict(), self.save_dir / f'fold{idx+1}_{epoch+1}epochs.pt')
+
 
         print(f"Fold {idx+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")
         return best_acc

@@ -47,13 +47,13 @@ class Trainer():
         return x, y
 
     def get_acc(self, output, y):
-        pred_labels = torch.softmax(output, dim=-1).argmax(dim=-1)
+        pred_labels = output.argmax(dim=-1)
         frame_acc = (pred_labels == y).float().mean(dim=1).cpu().numpy()
         acc = frame_acc.mean().item()
         return frame_acc, acc
 
     def plot_confusion_matrix(self, output, y, class_names):
-        pred_labels = torch.softmax(output, dim=-1).argmax(dim=-1)
+        pred_labels = output.argmax(dim=-1)
         pred_flat = pred_labels.view(-1).cpu().numpy()
         y_flat = y.view(-1).cpu().numpy()
 

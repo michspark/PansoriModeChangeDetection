@@ -7,8 +7,6 @@ import datetime
 from pathlib import Path
 
 import numpy as np
-from tqdm import tqdm
-from sklearn.model_selection import KFold, LeaveOneOut
 
 import hydra
 import wandb
@@ -33,6 +31,10 @@ def set_seed(seed=42):
 
 @hydra.main(config_path="configs", config_name="train")
 def main(cfg):
+    run_name = f'{cfg.models.cls}_KFold{1}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
+    wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit=True)
+    wandb.config.update(OmegaConf.to_container(cfg))
+
     set_seed(cfg.train.random_seed)
 
     audio_dir = cfg.data.audio_dir
@@ -53,37 +55,26 @@ def main(cfg):
     print(f"Length of dataset: {len(dataset)}")
 
     criterion = nn.CrossEntropyLoss()
-    selection = KFold(**cfg.kfold) if cfg.train.selection=="KFold" else LeaveOneOut(**cfg.loo)
 
     model_name = cfg.models.cls
     model_params = OmegaConf.to_container(cfg.models.cfg)
     model_class = getattr(models, model_name)
+    model = model_class(**model_params)
+    model = nn.DataParallel(model) if torch.cuda.device_count() > 1 else model.to(DEV)
+    optimizer = Adam(model.parameters(), lr=cfg.train.lr)
 
-    trainer = Trainer(dataset=dataset, 
+    trainer = Trainer(model=model,
+                      optimizer=optimizer,
+                      dataset=dataset, 
                       criterion=criterion,
                       device=DEV,
                       save_dir=save_dir, 
                       best_dir=best_dir,
                       config=cfg)
 
-    fold_best_acc = {}
-    for idx, (train_idx, test_idx) in enumerate(selection.split(range(len(trainer.dataset)))):
-        if wandb.run is not None: wandb.finish()
-        run_name = f'{cfg.models.cls}_Fold{idx+1}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
-        wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit=True)
-        wandb.config.update(OmegaConf.to_container(cfg))
 
-        model = model_class(**model_params)
-        model = nn.DataParallel(model) if torch.cuda.device_count() > 1 else model.to(DEV)
-        num_model_parameters = sum(p.numel() for p in model_class(**model_params).parameters())
-        wandb.summary['Num model parameters'] = num_model_parameters
-
-        optimizer = Adam(model.parameters(), lr=cfg.train.lr)
-
-        fold_best_acc[idx] = trainer.train_split(idx, train_idx, test_idx, model, optimizer)
-
-    print(f"KFold Average Accuracy: {sum(fold_best_acc.values())}")
-    if wandb.run is not None: wandb.finish()
+    fold_best_acc = trainer.train()
+    print(f"KFold Average Accuracy: {sum(fold_best_acc.values())/len(fold_best_acc)}")
 
     
 if __name__ == "__main__":

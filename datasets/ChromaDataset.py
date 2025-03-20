@@ -59,7 +59,7 @@ class ChromaDataset(AudioDataset):
         chroma = self.get_chroma(audio)
 
         # pitch shift aug
-        if self.aug: chroma = self.shift_chroma(chroma)
+        if self.aug: chroma = self.shift_chroma(chroma).unsqueeze(0)
 
         # ms label => frame label
         label = self.ms_to_frame_label(label)

@@ -5,6 +5,7 @@
 
 pansori_venv/
 notebooks/
+prv_code/
 
 .hydra/
 train/

@@ -19,7 +19,8 @@ class AudioDataset(Dataset):
         self.channels = channels
         self.num_classes = num_classes
 
-        self.label_map = {"Unknown":0, "창조":0, "설렁제":0, "경드름": 0, "우조": 1, "계면조": 2, "평조": 3, "아니리": 4}
+        self.label_map = {"Unknown":0, "창조":1, "아니리":1, "설렁제":2, "경드름":2, "우조":2, "평조":2, "계면조": 3}
+        # self.label_map = {"Unknown":0, "창조":0, "설렁제":0, "경드름": 0, "우조": 1, "계면조": 2, "평조": 3, "아니리": 4}
         self.loaded_hash, self.loaded_filename, self.loaded_audio = self.get_audio(audio_dir)
         self.loaded_label, self.label_dict = self.get_label(label_json)
 

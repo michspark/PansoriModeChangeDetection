@@ -12,15 +12,13 @@ class ChromaKrause(nn.Module):
         self.conv_layers_3 = self.get_conv_layers(conv_layers_3, conv_layers_2[-2], pool, dilation, conv_type="2D")
         self.conv_layers_4 = self.get_conv_layers(conv_layers_4, conv_layers_3[-2], pool, dilation, conv_type="2D")
         self.conv_layers_5 = self.get_conv_layers(conv_layers_5, conv_layers_4[-2], pool, dilation, conv_type="1D")
-
-        #self.lstm = nn.LSTM(input_size = 256*(25//8), hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
+        #self.lstm = nn.LSTM(input_size = 64, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
 
         self.fc_layers = self.get_fc_layers(fc_layers, fc_in_channels, dropout, num_classes)
 
     def get_conv_layers(self, conv_layers, in_channels, pool, dilation, conv_type = '2D'):
         layers = []
         for val in conv_layers:
-
             if val=="M":
                 layers.append(nn.MaxPool2d(kernel_size=eval(pool)) if conv_type == "2D" else nn.MaxPool1d(kernel_size=3, stride=1, padding = 1))
                 continue
@@ -52,6 +50,7 @@ class ChromaKrause(nn.Module):
             else:
                 layers.append(nn.Linear(in_features=in_channels, out_features=val))
                 in_channels = val
+
         layers.append(nn.Linear(in_features=in_channels, out_features=num_classes))
 
         return nn.ModuleList(layers)
@@ -68,9 +67,9 @@ class ChromaKrause(nn.Module):
         b, c, t = x.shape
         x = x.permute(0,2,1)
         x = x.reshape(b, t, -1)
+       # x, _ = self.lstm(x)
 
-        #x, _ = self.lstm(x)
-
+        #print(f"X output shape: {x.shape}")
         for layer in self.fc_layers: x = layer(x)
 
         return x

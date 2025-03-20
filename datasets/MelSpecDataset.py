@@ -20,17 +20,17 @@ class MelSpecDataset(AudioDataset):
         mel_spec_dict = {}
         for k, v in tqdm(self.loaded_audio.items(), desc='Load MelSpectrogram'):
             mel_spec = self.mel_cvt(v).squeeze(0)
-
             # librosa 구현형
 
-            '''
             max_values, _ = torch.max(mel_spec, dim=0, keepdim=True)
             max_values[max_values == 0] = 1.0 # 최댓값이 0인 경우 => 1
             mel_spec = mel_spec / max_values # 가장 강한 음높이 성분 => 1
-            '''
-            mel_spec = torch.log1p(mel_spec)
 
-            # expand chroma
+
+            #mel_spec = torch.log1p(mel_spec) # Normalization using natural logarithm
+
+            # expand mel_spec
+
             '''
             repeat = self.target_bins // chroma.shape[0] + 1
             expanded_chroma = chroma.repeat_interleave(repeat, dim=0)'
@@ -70,7 +70,6 @@ class MelSpecDataset(AudioDataset):
         if random.random() < prob:
             shift_amount = random.randint(0, self.max_shift)
             mel_spec = torch.roll(mel_spec, shifts=shift_amount, dims=0)
-
         return mel_spec
 
     def get_start_time(self, filename, start_frame):

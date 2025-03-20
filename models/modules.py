@@ -25,6 +25,7 @@ class KrauseConvBlock2D(nn.Module):
                               dilation = dilation)
 
         self.bn1 = nn.BatchNorm2d(num_features=out_channels)
+
         self.activation = nn.ReLU()
 
     def forward(self, x):

@@ -2,6 +2,9 @@ from .modules import KrauseConvBlock2D, KrauseConvBlock1D
 import torch.nn as nn
 
 class ChromaKrause(nn.Module):
+    '''
+    Model structure implemented from 'Towards Leitmotif Activity Detection in Opera Recordings' (Krause et.al.)
+    '''
     def __init__(self,  conv_layers_1, conv_layers_2, conv_layers_3, conv_layers_4, conv_layers_5, conv_in_channels, pool, dilation, fc_layers, fc_in_channels, dropout, num_classes):
         super().__init__()
 
@@ -46,6 +49,7 @@ class ChromaKrause(nn.Module):
             if val=="D": layers.append(nn.Dropout(dropout))
             elif val=="relu": layers.append(nn.ReLU())
             elif val=="gelu": layers.append(nn.GELU())
+            elif val=='sigmoid': layers.append(nn.Sigmoid())
 
             else:
                 layers.append(nn.Linear(in_features=in_channels, out_features=val))

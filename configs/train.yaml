@@ -13,7 +13,7 @@ data:
 train:
   lr: 5e-4
   batch_size: 8
-  num_epochs: 100
+  num_epochs: 150
   random_seed: 42
   selection: KFold
 

@@ -60,9 +60,6 @@ def main(cfg):
     print(f"Dataset class: {dataset_class}, Type : {type(dataset_class)}")
 
     dataset = dataset_class(audio_dir, label_json, **dataset_params)
-
-    #print(type(dataset_class))
-    #dataset = dataset_class(audio_dir, label_json, **dataset_params)
     print(f"Length of dataset: {len(dataset)}")
 
     criterion = nn.CrossEntropyLoss()
@@ -93,7 +90,7 @@ def main(cfg):
 
         optimizer = Adam(model.parameters(), lr=cfg.train.lr)
 
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 0.5)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 0.7)
 
         fold_best_acc[idx] = trainer.train_split(idx, train_idx, test_idx, model, optimizer, scheduler)
 

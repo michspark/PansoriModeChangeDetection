@@ -17,7 +17,7 @@ class AudioDataset(Dataset):
         self.num_classes = num_classes
         self.loaded_filename, self.loaded_audio = self.get_audio(audio_dir, ext='.wav')
         self.label_dict = self.get_label_dict(label_json)
-        self.label_map = {"Unknown":0, "창조":0, "설렁제":0, "경드름": 0, "우조": 1, "계면조": 2, "평조": 3, "아니리": 4}
+        self.label_map = {"Unknown":0, "창조":2, "설렁제":1, "경드름": 1, "우조": 1, "계면조": 0, "평조": 1, "아니리": 2}
 
     def get_audio(self, audio_dir, ext=".wav"):
         """

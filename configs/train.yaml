@@ -3,8 +3,8 @@ hydra:
     dir: .
 
 defaults:
-  - models: ChromaCNNLSTM
-  - datasets: ChromaDataset
+  - models: ChromaKrause
+  - datasets: MelSpecDataset
 
 data:
   audio_dir: "/home/sangheon/Desktop/Pansori/Audio"

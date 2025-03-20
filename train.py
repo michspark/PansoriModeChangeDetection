@@ -1,5 +1,6 @@
 import models
 import datasets
+from datasets import *
 from trainer import Trainer
 
 import random
@@ -47,9 +48,21 @@ def main(cfg):
     with open(best_dir/'config.yaml', 'w') as f: OmegaConf.save(cfg, f)
 
     dataset_name = cfg.datasets.dset
+
+    dataset_mapping = {
+    "ChromaDataset": ChromaDataset,
+    "MelSpecDataset": MelSpecDataset
+    }
+
     dataset_params = OmegaConf.to_container(cfg.datasets.cfg)
-    dataset_class = getattr(datasets, dataset_name)
+    dataset_class = dataset_mapping.get(dataset_name, None)
+    print(f"Dataset name: {dataset_name}")
+    print(f"Dataset class: {dataset_class}, Type : {type(dataset_class)}")
+
     dataset = dataset_class(audio_dir, label_json, **dataset_params)
+
+    #print(type(dataset_class))
+    #dataset = dataset_class(audio_dir, label_json, **dataset_params)
     print(f"Length of dataset: {len(dataset)}")
 
     criterion = nn.CrossEntropyLoss()

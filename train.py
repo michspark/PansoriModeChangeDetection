@@ -65,7 +65,7 @@ def compute_class_weights(dataset, train_idx, target_classes=[2, 3]):
 
 def print_evaluation_table(val_table):
     """
-    Precision, Recall, F1-score 데이터를 예쁘게 출력하는 함수
+    Output Precision, Recall, F1-score in organized table
     """
     headers = ["Class", "Precision", "Recall", "F1-score", "Support"]
     table_data = []

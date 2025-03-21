@@ -5,7 +5,7 @@ class ChromaCNNLSTM(nn.Module):
     def __init__(self, conv_layers, conv_in_channels, pool, fc_layers, fc_in_channels, dropout, num_classes):
         super().__init__()
         self.conv_layers = self.get_conv_layers(conv_layers, conv_in_channels, pool)
-        self.lstm = nn.LSTM(input_size=64*(25//4), hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
+        self.lstm = nn.LSTM(input_size= 1024, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
         self.fc_layers = self.get_fc_layers(fc_layers, fc_in_channels, dropout, num_classes)
 
     def get_conv_layers(self, conv_layers, in_channels, pool):

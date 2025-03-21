@@ -30,7 +30,7 @@ def set_seed(seed=42):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
     print(f"Set Seed {seed}")
-'''
+
 def compute_class_weights(dataset, train_idx, target_classes=[2, 3]):
     label_indices = []
 
@@ -46,13 +46,27 @@ def compute_class_weights(dataset, train_idx, target_classes=[2, 3]):
 
     class_weights = torch.ones(len(class_counts), dtype=torch.float32)
 
+    '''
+    class_weights[0] = 1.0
+    class_weights[1] = 1.0
+    class_weights[2] = 1.7
+    class_weights[3] = 1.0
+    '''
+
     for c in target_classes:
         if class_counts[c] > 0:
             class_weights[c] = total_samples / (2 * class_counts[c])
 
+    class_weights[2] *= 1.3
+    class_weights[3] *= 0.7
+
+    print(f"Class 0 Weight {class_weights[0]}")
+    print(f"Class 1 Weight {class_weights[1]}")
+    print(f"Class 2 Weight {class_weights[2]}")
+    print(f"Class 3 Weight {class_weights[3]}")
+
     return class_weights.to(DEV)
 
-'''
 @hydra.main(config_path="configs", config_name="train")
 def main(cfg):
     set_seed(cfg.train.random_seed)
@@ -114,9 +128,10 @@ def main(cfg):
         optimizer = Adam(model.parameters(), lr=cfg.train.lr)
 
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 0.7)
-        #class_weights = compute_class_weights(trainer.dataset, train_idx, target_classes=[2, 3])
 
-        #criterion = nn.CrossEntropyLoss(weight = class_weights)
+        class_weights = compute_class_weights(trainer.dataset, train_idx, target_classes=[2, 3])
+
+        criterion = nn.CrossEntropyLoss(weight = class_weights)
 
         fold_best_acc[idx] = trainer.train_split(idx, train_idx, test_idx, model, optimizer, scheduler)
 

@@ -72,6 +72,7 @@ class ChromaKrause(nn.Module):
         b, c, t = x.shape
         x = x.permute(0,2,1)
         x = x.reshape(b, t, -1)
+
        # x, _ = self.lstm(x)
 
         #print(f"X output shape: {x.shape}")

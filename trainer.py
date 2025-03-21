@@ -1,15 +1,13 @@
 from io import BytesIO
 from pathlib import Path
-
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
-
+from sklearn.metrics import classification_report
 import wandb
-
 import torch
 
 class Trainer():
@@ -77,6 +75,25 @@ class Trainer():
         buf.close()
         return image_np
 
+    def precision_recall_report(self, output, y):
+
+        pred_labels = torch.softmax(output, dim = -1).argmax(dim=-1)
+
+        y_true = y.view(-1).cpu().numpy()
+        y_pred = pred_labels.view(-1).cpu().numpy()
+
+        num_classes = self.dataset.num_classes
+        class_names = [f"Class {i}" for i in range(num_classes)]
+        report = classification_report(y_true, y_pred, target_names = class_names, output_dict = True, zero_division= 1)
+
+        table = wandb.Table(columns=["Class", "Precision", "Recall", "F1-score", "Support"])
+
+        for class_name, metrics in report.items():
+            if isinstance(metrics, dict):
+                table.add_data(class_name, metrics["precision"], metrics["recall"], metrics["f1-score"], metrics["support"])
+
+        return report, table
+
     def train_epoch(self, train_x, train_y, model, optimizer):
         model.train()
         total_loss = 0
@@ -112,7 +129,8 @@ class Trainer():
             frame_acc, acc = self.get_acc(val_output, val_y)
             val_cm = self.plot_confusion_matrix(val_output, val_y, range(self.dataset.num_classes))
 
-        return val_loss.item(), frame_acc, acc, val_cm
+            _, val_table = self.precision_recall_report(val_output, val_y)
+        return val_loss.item(), frame_acc, acc, val_cm, val_table
 
     def train_split(self, idx, train_idx, test_idx, model, optimizer, scheduler):
         print(f"{'='*25}{idx+1} Fold{'='*25}")
@@ -132,12 +150,13 @@ class Trainer():
 
             scheduler.step()
 
-            val_loss, val_frame_acc, val_acc, val_cm = self.evaluate(test_x, test_y, model)
+            val_loss, val_frame_acc, val_acc, val_cm, val_table = self.evaluate(test_x, test_y, model)
+
             wandb.log({"Valid Loss":val_loss,
                         "Valid Frame Acc":val_frame_acc,
                         "Valid Acc":val_acc,
                         "Valid Confusion Matrix": wandb.Image(Image.fromarray(val_cm))},
-                        step=epoch)
+                        step = epoch)
 
             train_pbar.set_description(f"Fold {idx+1} | Epoch {epoch+1} | Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
             if val_acc > best_acc:
@@ -146,8 +165,10 @@ class Trainer():
                 torch.save(model.state_dict(), self.best_dir/f'fold{idx+1}_{best_epoch+1}epochs_best_model.pt')
             if (epoch+1)%10==0: torch.save(model.state_dict(), self.save_dir / f'fold{idx+1}_{epoch+1}epochs.pt')
 
+
         print(f"Fold {idx+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")
-        return best_acc
+
+        return best_acc, val_table
 
     # def train(self):
     #     fold_best_acc = {}

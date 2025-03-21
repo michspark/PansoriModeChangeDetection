@@ -6,7 +6,7 @@ from torchaudio.transforms import MelSpectrogram
 import os
 
 class MelSpecDataset(AudioDataset):
-    def __init__(self, audio_dir, label_json, num_classes=5, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=64, shift=0.4):
+    def __init__(self, audio_dir, label_json, num_classes = 4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=64, shift=0.4):
         super().__init__(audio_dir, label_json, num_classes, sr, channels, window)
         self.hop_length = hop_length
         self.target_bins = target_bins
@@ -15,6 +15,7 @@ class MelSpecDataset(AudioDataset):
         self.loaded_mel_spec = self.get_mel()
         self.max_shift = self.target_bins//4 if shift else None
         self.audio_files = [f for f in os.listdir(audio_dir) if f.endswith('.wav') or f.endswith('.mp3')]
+        self.num_classes = 4
 
     def get_mel(self):
         mel_spec_dict = {}

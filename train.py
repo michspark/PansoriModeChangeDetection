@@ -18,6 +18,9 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 
+from tabulate import tabulate
+
+
 # DEV = 'mps' if torch.mps.is_available() else 'cpu'
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -46,13 +49,6 @@ def compute_class_weights(dataset, train_idx, target_classes=[2, 3]):
 
     class_weights = torch.ones(len(class_counts), dtype=torch.float32)
 
-    '''
-    class_weights[0] = 1.0
-    class_weights[1] = 1.0
-    class_weights[2] = 1.7
-    class_weights[3] = 1.0
-    '''
-
     for c in target_classes:
         if class_counts[c] > 0:
             class_weights[c] = total_samples / (2 * class_counts[c])
@@ -66,6 +62,26 @@ def compute_class_weights(dataset, train_idx, target_classes=[2, 3]):
     print(f"Class 3 Weight {class_weights[3]}")
 
     return class_weights.to(DEV)
+
+def print_evaluation_table(val_table):
+    """
+    Precision, Recall, F1-score 데이터를 예쁘게 출력하는 함수
+    """
+    headers = ["Class", "Precision", "Recall", "F1-score", "Support"]
+    table_data = []
+
+    for row in val_table:
+        table_data.append([
+            row[0],
+            f"{row[1]:.4f}",
+            f"{row[2]:.4f}",
+            f"{row[3]:.4f}",
+            int(row[4])
+        ])
+
+    print("\n===== Precision, Recall, F1-score Report =====")
+    print(tabulate(table_data, headers=headers, tablefmt="grid"))
+    print("=" * 60, "\n")
 
 @hydra.main(config_path="configs", config_name="train")
 def main(cfg):
@@ -133,7 +149,9 @@ def main(cfg):
 
         criterion = nn.CrossEntropyLoss(weight = class_weights)
 
-        fold_best_acc[idx] = trainer.train_split(idx, train_idx, test_idx, model, optimizer, scheduler)
+        fold_best_acc[idx], val_table = trainer.train_split(idx, train_idx, test_idx, model, optimizer, scheduler)
+
+        print_evaluation_table(val_table.data)
 
     print(f"KFold Average Accuracy: {sum(fold_best_acc.values())}")
     if wandb.run is not None: wandb.finish()

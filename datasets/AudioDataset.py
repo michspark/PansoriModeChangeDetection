@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 import torchaudio
 
 class AudioDataset(Dataset):
-    def __init__(self, audio_dir, label_json, num_classes=4, sr=16000, channels='mono', window=20,):
+    def __init__(self, audio_dir, label_json, num_classes = 4, sr=16000, channels='mono', window=20,):
         super().__init__()
         self.sr = sr
         self.window = window

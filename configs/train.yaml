@@ -3,7 +3,7 @@ hydra:
     dir: .
 
 defaults:
-  - models: ChromaCNNLSTM
+  - models: ChromaKrause
   - datasets: MelSpecDataset
 
 data:

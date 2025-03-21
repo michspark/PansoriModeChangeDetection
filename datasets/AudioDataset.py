@@ -17,7 +17,7 @@ class AudioDataset(Dataset):
         self.num_classes = num_classes
         self.loaded_filename, self.loaded_audio = self.get_audio(audio_dir, ext='.wav')
         self.label_dict = self.get_label_dict(label_json)
-        self.label_map = {"Unknown":0, "창조":2, "설렁제":1, "경드름": 1, "우조": 1, "계면조": 0, "평조": 1, "아니리": 2}
+        self.label_map = {"Unknown":0, "창조":1, "아니리":1, "설렁제":2, "경드름":2, "우조":2, "평조":2, "계면조": 3}
 
     def get_audio(self, audio_dir, ext=".wav"):
         """
@@ -63,6 +63,26 @@ class AudioDataset(Dataset):
                     start, end, label = result["value"]["start"], result["value"]["end"], result["value"]["labels"][0]
                     label_dict[filename].append({"start": start, "end": end, "label": label})
         return label_dict
+
+    def get_total_time(self, label_json):
+        with open(label_json, 'r', encoding = 'utf-8') as file: label_data = json.load(file)
+
+        label_durations = {}
+        total_annotated_duration = 0
+
+        for annotation_block in label_data:
+            for annotation in annotation_block['annotations'][0]['result']:
+                label = annotation['value']['labels'][0]
+                start = annotation['value']['start']
+                end = annotation['value']['end']
+                duration = end - start
+
+                if label not in label_durations:
+                    label_durations[label] = 0
+                label_durations[label] += duration
+                total_annotated_duration += duration
+
+        return label_durations, total_annotated_duration
 
     def get_label(self, filename, start):
         """

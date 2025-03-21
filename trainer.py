@@ -30,7 +30,7 @@ class Trainer():
     def load_segments(self, ids):
         x, y = [], []
         for idx in ids:
-            _, _, (_, _, duration) = self.dataset[idx]
+            _, _, (filename, _, duration) = self.dataset[idx]
             num_segments = int(duration // self.dataset.window)
 
             for i in range(num_segments):
@@ -44,7 +44,7 @@ class Trainer():
                 y.append(label)
         x = torch.stack(x).to(self.device)
         y = torch.stack(y).to(self.device).argmax(dim=-1)
-        return x, y
+        return x, y, filename
 
     def get_acc(self, output, y):
         pred_labels = torch.softmax(output, dim=-1).argmax(dim=-1)
@@ -111,17 +111,19 @@ class Trainer():
             val_loss = self.criterion(val_output.permute(0, 2, 1), val_y)
             frame_acc, acc = self.get_acc(val_output, val_y)
             val_cm = self.plot_confusion_matrix(val_output, val_y, range(self.dataset.num_classes))
+
         return val_loss.item(), frame_acc, acc, val_cm
 
     def train_split(self, idx, train_idx, test_idx, model, optimizer, scheduler):
         print(f"{'='*25}{idx+1} Fold{'='*25}")
         best_acc, best_epoch = 0, 0
-        test_x, test_y = self.load_segments(test_idx) # segment 고정
+        test_x, test_y, _ = self.load_segments(test_idx) # segment 고정
+        #print(f"Test file ======== {filename}=========")
 
         train_pbar = tqdm(range(self.num_epochs), desc=f"Fold {idx+1}")
 
         for epoch in train_pbar:
-            train_x, train_y = self.load_segments(train_idx)
+            train_x, train_y, _ = self.load_segments(train_idx)
             train_loss, train_frame_acc, train_acc = self.train_epoch(train_x, train_y, model, optimizer)
             wandb.log({"Train Loss": train_loss,
                         "Train Frame Acc": train_frame_acc,
@@ -143,7 +145,6 @@ class Trainer():
                 best_epoch = epoch
                 torch.save(model.state_dict(), self.best_dir/f'fold{idx+1}_{best_epoch+1}epochs_best_model.pt')
             if (epoch+1)%10==0: torch.save(model.state_dict(), self.save_dir / f'fold{idx+1}_{epoch+1}epochs.pt')
-
 
         print(f"Fold {idx+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")
         return best_acc

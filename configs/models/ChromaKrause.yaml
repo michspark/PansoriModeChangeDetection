@@ -13,9 +13,9 @@ cfg:
 
   fc_layers: [64, 'sigmoid', 'D']
 
-  num_classes: 3
+  num_classes: 4
   fc_in_channels: 64
-  dropout: 0.5
+  dropout: 0.3
 
 
 

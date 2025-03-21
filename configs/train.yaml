@@ -12,8 +12,8 @@ data:
 
 train:
   lr: 5e-4
-  batch_size: 8
-  num_epochs: 150
+  batch_size: 16
+  num_epochs: 100
   random_seed: 42
   selection: KFold
 
@@ -22,7 +22,7 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-loocv: {}
+loo: {}
 
 dir:
   save_dir: "/home/sangheon/Desktop/Pansori_2025_ISMIR/train/weights"

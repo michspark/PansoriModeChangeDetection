@@ -15,6 +15,7 @@ class ChromaKrause(nn.Module):
         self.conv_layers_3 = self.get_conv_layers(conv_layers_3, conv_layers_2[-2], pool, dilation, conv_type="2D")
         self.conv_layers_4 = self.get_conv_layers(conv_layers_4, conv_layers_3[-2], pool, dilation, conv_type="2D")
         self.conv_layers_5 = self.get_conv_layers(conv_layers_5, conv_layers_4[-2], pool, dilation, conv_type="1D")
+
         #self.lstm = nn.LSTM(input_size = 64, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
 
         self.fc_layers = self.get_fc_layers(fc_layers, fc_in_channels, dropout, num_classes)

@@ -10,7 +10,6 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 from sklearn.model_selection import KFold, LeaveOneOut
-
 import hydra
 import wandb
 from omegaconf import OmegaConf
@@ -31,7 +30,29 @@ def set_seed(seed=42):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
     print(f"Set Seed {seed}")
+'''
+def compute_class_weights(dataset, train_idx, target_classes=[2, 3]):
+    label_indices = []
 
+    for i in train_idx:
+        label_tensor = dataset[i][1]
+        class_indices = label_tensor.argmax(dim=1)
+        most_common_class = torch.bincount(class_indices).argmax().item()
+        label_indices.append(most_common_class)
+
+    labels = np.array(label_indices)
+    class_counts = np.bincount(labels)
+    total_samples = sum(class_counts)
+
+    class_weights = torch.ones(len(class_counts), dtype=torch.float32)
+
+    for c in target_classes:
+        if class_counts[c] > 0:
+            class_weights[c] = total_samples / (2 * class_counts[c])
+
+    return class_weights.to(DEV)
+
+'''
 @hydra.main(config_path="configs", config_name="train")
 def main(cfg):
     set_seed(cfg.train.random_seed)
@@ -60,14 +81,16 @@ def main(cfg):
     print(f"Dataset class: {dataset_class}, Type : {type(dataset_class)}")
 
     dataset = dataset_class(audio_dir, label_json, **dataset_params)
+
     print(f"Length of dataset: {len(dataset)}")
 
-    criterion = nn.CrossEntropyLoss()
     selection = KFold(**cfg.kfold) if cfg.train.selection=="KFold" else LeaveOneOut(**cfg.loo)
 
     model_name = cfg.models.cls
     model_params = OmegaConf.to_container(cfg.models.cfg)
     model_class = getattr(models, model_name)
+
+    criterion = nn.CrossEntropyLoss()
 
     trainer = Trainer(dataset=dataset,
                       criterion=criterion,
@@ -80,7 +103,7 @@ def main(cfg):
     for idx, (train_idx, test_idx) in enumerate(selection.split(range(len(trainer.dataset)))):
         if wandb.run is not None: wandb.finish()
         run_name = f'{cfg.models.cls}_Fold{idx+1}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
-        wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit=True)
+        wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit= True)
         wandb.config.update(OmegaConf.to_container(cfg))
 
         model = model_class(**model_params)
@@ -91,6 +114,9 @@ def main(cfg):
         optimizer = Adam(model.parameters(), lr=cfg.train.lr)
 
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 0.7)
+        #class_weights = compute_class_weights(trainer.dataset, train_idx, target_classes=[2, 3])
+
+        #criterion = nn.CrossEntropyLoss(weight = class_weights)
 
         fold_best_acc[idx] = trainer.train_split(idx, train_idx, test_idx, model, optimizer, scheduler)
 

@@ -1,0 +1,54 @@
+hydra:
+  run:
+    dir: .
+
+# Data sources
+data:
+  audio_dir: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/data/Audio"
+  label_json: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/data/label.json"
+
+# Dataset configuration
+dataset:
+  name: "ChromaDataset"
+  params:
+    num_classes: 4
+    sr: 16000
+    channels: 'mono'
+    window: 20
+    n_fft: 2048
+    hop_length: 512
+    target_bins: 40
+    aug: True
+
+# Model configuration
+model:
+  name: "GRUModel"
+  params:
+    num_layers: 3
+    hidden_dim: 128
+    input_size: 40
+    num_classes: 4
+    dropout: 0.3
+
+# Training parameters
+train:
+  lr: 5e-4
+  batch_size: 8
+  num_iterations: 4000
+  eval_interval: 200
+  save_interval: 1000
+  random_seed: 42
+  selection: KFold
+
+# Cross-validation parameters
+kfold:
+  n_splits: 5
+  shuffle: True
+  random_state: ${train.random_seed}
+
+loo: None
+
+# Directory paths
+dir:
+  save_dir: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/train/weights"
+  best_dir: "/Users/jcastle/workspace/pansori/Pansori_2025_ISMIR/train/best_model" 

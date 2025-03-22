@@ -1,17 +1,26 @@
+import wandb
+from omegaconf import OmegaConf
+
+import numpy as np
+import seaborn as sns
+import copy
+from PIL import Image
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+from sklearn.model_selection import KFold
+from sklearn.metrics import confusion_matrix
+
+import datetime
 from io import BytesIO
 from pathlib import Path
-import numpy as np
-from tqdm import tqdm
-from PIL import Image
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-from sklearn.metrics import classification_report
-import wandb
-import torch
 
-class Trainer():
-    def __init__(self, dataset, criterion, device, save_dir, best_dir, config):
+import torch
+from torch.utils.data import DataLoader
+
+class Trainer:
+    def __init__(self, model, optimizer, dataset, criterion, device, save_dir, best_dir, config):
+        self.model = model
+        self.optimizer = optimizer
         self.dataset = dataset
         self.criterion = criterion
         self.device = device
@@ -21,41 +30,71 @@ class Trainer():
 
         self.config = config
         self.batch_size = config.train.batch_size
-        self.num_epochs = config.train.num_epochs
+        self.num_iterations = config.train.num_iterations
+        self.eval_interval = config.train.get('eval_interval', 200)
+        self.save_interval = config.train.get('save_interval', 1000)
 
-        self.num_updated = 0
+        self.global_step = 0
+        self.model.to(self.device)
 
-    def load_segments(self, ids):
-        x, y = [], []
-        for idx in ids:
-            _, _, (filename, _, duration) = self.dataset[idx]
-            num_segments = int(duration // self.dataset.window)
+    def get_acc(self, output, label):
+        pred = output.argmax(dim=-1)
+        true = label.argmax(dim=-1)
+        acc = (pred == true).float().mean(dim=1).cpu().numpy().mean().item()
+        return acc
 
-            for i in range(num_segments):
-                chroma, label, _ = self.dataset[idx]
-                if isinstance(chroma, torch.Tensor): chroma = chroma.clone().detach().to(dtype=torch.float32).unsqueeze(0)
-                else: chroma = torch.tensor(chroma, dtype=torch.float32).unsqueeze(0)
-                if isinstance(label, torch.Tensor): label = label.clone().detach().to(dtype=torch.float32)
-                else: label = torch.tensor(label, dtype=torch.float32)
+    def train_batch(self, x, y):
+        self.model.train()
+        x, y = x.to(self.device), y.to(self.device)
+        self.optimizer.zero_grad()
+        outputs = self.model(x)
+        loss = self.criterion(outputs.permute(0,2,1), y.argmax(dim=-1))
+        loss.backward()
+        self.optimizer.step()
+        
+        batch_outputs = outputs.detach()
+        batch_acc = self.get_acc(batch_outputs, y)
+        
+        return loss.item(), batch_outputs, batch_acc
 
-                x.append(chroma)
-                y.append(label)
-        x = torch.stack(x).to(self.device)
-        y = torch.stack(y).to(self.device).argmax(dim=-1)
-        return x, y, filename
+    def evaluate(self, test_dataset):
+        self.model.eval()
+        test_loader = DataLoader(test_dataset, batch_size=1)  # Batch size 1 for full audio evaluation
+        
+        total_loss = 0
+        all_outputs, all_labels = [], []
+        
+        with torch.no_grad():
+            for batch in test_loader:
+                if len(batch) == 4:
+                    hash_key, filename, x, y = batch
+                else:  # Handle other dataset formats
+                    x, y = batch
+                
+                x, y = x.to(self.device), y.to(self.device)
+                outputs = self.model(x)
+                if outputs.shape[1] != y.shape[1]: outputs = outputs[:, :y.shape[1]]
+                loss = self.criterion(outputs.permute(0,2,1), y.argmax(dim=-1))
+                total_loss += loss.item()
+                all_outputs.append(outputs.detach())
+                all_labels.append(y)
 
-    def get_acc(self, output, y):
-        pred_labels = torch.softmax(output, dim=-1).argmax(dim=-1)
-        frame_acc = (pred_labels == y).float().mean(dim=1).cpu().numpy()
-        acc = frame_acc.mean().item()
-        return frame_acc, acc
+        all_outputs, all_labels = torch.cat(all_outputs, dim=1), torch.cat(all_labels, dim=1)
+        epoch_loss = total_loss / len(test_loader)
+        epoch_acc = self.get_acc(all_outputs, all_labels)
+        cm = self.plot_confusion_matrix(all_outputs, all_labels, range(test_dataset.num_classes))
+        return epoch_loss, epoch_acc, cm
 
     def plot_confusion_matrix(self, output, y, class_names):
-        pred_labels = torch.softmax(output, dim=-1).argmax(dim=-1)
-        pred_flat = pred_labels.view(-1).cpu().numpy()
-        y_flat = y.view(-1).cpu().numpy()
-
-        cm = confusion_matrix(y_flat, pred_flat, normalize='true')
+        true_labels = y.argmax(dim=-1)
+        pred_labels = output.argmax(dim=-1)
+        
+        true_flat = true_labels.reshape(-1).cpu().numpy()
+        pred_flat = pred_labels.reshape(-1).cpu().numpy()
+        
+        assert len(true_flat) == len(pred_flat), f"Length mismatch: {len(true_flat)} vs {len(pred_flat)}"
+        
+        cm = confusion_matrix(true_flat, pred_flat, normalize='true')
 
         fig = plt.figure(figsize=(14, 14))
         ax = fig.add_subplot(1, 1, 1)
@@ -65,7 +104,7 @@ class Trainer():
         plt.xlabel('Predicted Label', size=16)
         plt.xticks(fontsize=12)
         plt.yticks(fontsize=12)
-        plt.tight_layout()
+        plt.tight_layout() 
         buf = BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
@@ -75,129 +114,116 @@ class Trainer():
         buf.close()
         return image_np
 
-    def precision_recall_report(self, output, y):
+    def train(self):
+        fold_best_acc = {}
+        org_model_state = copy.deepcopy(self.model.state_dict())
+        kfold = KFold(**self.config.kfold)
 
-        pred_labels = torch.softmax(output, dim = -1).argmax(dim=-1)
+        for fold, (train_idx, test_idx) in enumerate(kfold.split(range(len(self.dataset.loaded_hash)))):
+            if wandb.run is not None: wandb.finish()
+            run_name = f'{self.config.model.name}_{self.config.dataset.name}_Fold{fold+1}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
+            wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit=True)
+            wandb.config.update(OmegaConf.to_container(self.config))
 
-        y_true = y.view(-1).cpu().numpy()
-        y_pred = pred_labels.view(-1).cpu().numpy()
+            self.model.load_state_dict(org_model_state)
+            self.optimizer = torch.optim.Adam(self.model.parameters(), self.config.train.lr)
 
-        num_classes = self.dataset.num_classes
-        class_names = [f"Class {i}" for i in range(num_classes)]
-        report = classification_report(y_true, y_pred, target_names = class_names, output_dict = True, zero_division= 1)
+            print(f"{'='*25}{fold+1} Fold{'='*25}")
+            best_acc, best_iteration = 0, 0
+            
+            # Create training and validation datasets
+            train_hash_keys = [self.dataset.loaded_hash[i] for i in train_idx]
+            test_hash_keys = [self.dataset.loaded_hash[i] for i in test_idx]
+            
+            # Filter slice indices for training 
+            self.dataset.slice_indices = [si for si in self.dataset.slice_indices if si[0] in train_hash_keys]
+            
+            # Create validation dataset with validation_mode=True
+            test_dataset = copy.deepcopy(self.dataset)
+            test_dataset.validation_mode = True
+            
+            # Filter validation dataset to only include test hash keys
+            test_hash_indices = [i for i, hash_key in enumerate(test_dataset.loaded_hash) if hash_key in test_hash_keys]
+            test_dataset.loaded_hash = [test_dataset.loaded_hash[i] for i in test_hash_indices]
+            
+            # Create data loader for training
+            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
 
-        table = wandb.Table(columns=["Class", "Precision", "Recall", "F1-score", "Support"])
+            self.global_step = 0
+            train_iter = iter(train_loader)
+            pbar = tqdm(total=self.num_iterations, desc=f"Fold {fold+1}")
+            
+            all_outputs, all_labels = [], []
+            running_loss = 0
+            current_epoch = 0
+            
+            while self.global_step < self.num_iterations:
+                try:
+                    _, _, x, y = next(train_iter)
+                except StopIteration:
+                    # Update slice indices for new epoch
+                    self.dataset.update_slice_indices()
+                    # Filter slice indices again for training
+                    self.dataset.slice_indices = [si for si in self.dataset.slice_indices if si[0] in train_hash_keys]
+                    train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                    train_iter = iter(train_loader)
+                    current_epoch += 1
+                    print(f"Starting epoch {current_epoch} with {len(self.dataset.slice_indices)} segments")
+                    _, _, x, y = next(train_iter)
+                
+                loss, batch_outputs, batch_acc = self.train_batch(x, y)
+                running_loss += loss
+                
+                all_outputs.append(batch_outputs)
+                all_labels.append(y.to(self.device))
+                
+                wandb.log({"Train Step Loss": loss, "Train Step Acc": batch_acc}, step=self.global_step)
+                
+                self.global_step += 1
+                pbar.update(1)
+                pbar.set_description(f"Fold {fold+1} | Iter {self.global_step}/{self.num_iterations} | Loss: {loss:.4f}, Acc: {batch_acc:.4f}")
+                
+                # Evaluate at specified intervals
+                if self.global_step % self.eval_interval == 0:
+                    # Calculate training metrics over collected batches
+                    if all_outputs and all_labels:
+                        all_out = torch.cat(all_outputs, dim=0)
+                        all_lab = torch.cat(all_labels, dim=0)
+                        train_acc = self.get_acc(all_out, all_lab)
+                        train_loss = running_loss / len(all_outputs)
+                        
+                        wandb.log({"Train Interval Loss": train_loss,
+                                "Train Interval Acc": train_acc},
+                                step=self.global_step)
+                        
+                        # Reset accumulators
+                        all_outputs, all_labels = [], []
+                        running_loss = 0
+                    
+                    # Evaluate on validation set
+                    val_loss, val_acc, val_cm = self.evaluate(test_dataset)
+                    wandb.log({"Valid Loss": val_loss,
+                                "Valid Acc": val_acc,
+                                "Valid Confusion Matrix": wandb.Image(Image.fromarray(val_cm))},
+                                step=self.global_step)
+                    
+                    pbar.set_description(f"Fold {fold+1} | Iter {self.global_step}/{self.num_iterations} | Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+                    
+                    if val_acc > best_acc:
+                        best_acc = val_acc
+                        best_iteration = self.global_step
+                        fold_best_acc[fold] = best_acc
+                        torch.save(self.model.state_dict(), self.save_dir/f'fold{fold+1}_best_model.pt')
+                
+                # Save checkpoints at specified intervals
+                if self.global_step % self.save_interval == 0:
+                    torch.save(self.model.state_dict(), self.save_dir / f'fold{fold+1}_{self.global_step}_iter.pt')
+                
+                if self.global_step >= self.num_iterations:
+                    break
+            
+            pbar.close()
+            print(f"Fold {fold+1} Best Accuracy: {best_acc:.4f} at iteration {best_iteration}")
 
-        for class_name, metrics in report.items():
-            if isinstance(metrics, dict):
-                table.add_data(class_name, metrics["precision"], metrics["recall"], metrics["f1-score"], metrics["support"])
-
-        return report, table
-
-    def train_epoch(self, train_x, train_y, model, optimizer):
-        model.train()
-        total_loss = 0
-
-        ids = torch.randperm(len(train_x))
-        train_x, train_y = train_x[ids], train_y[ids]
-
-        all_outputs, all_labels = [], []
-
-        for i in range(0, len(train_x), self.batch_size):
-            batch_x, batch_y = train_x[i:i+self.batch_size], train_y[i:i+self.batch_size]
-            optimizer.zero_grad()
-            outputs = model(batch_x)
-
-            loss = self.criterion(outputs.permute(0, 2, 1), batch_y)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-
-            all_outputs.append(outputs.detach())
-            all_labels.append(batch_y)
-
-        all_outputs, all_labels = torch.cat(all_outputs, dim=0), torch.cat(all_labels, dim=0)
-        epoch_loss = total_loss / (len(train_x) // self.batch_size)
-        epoch_frame_acc, epoch_acc = self.get_acc(all_outputs, all_labels)
-        return epoch_loss, epoch_frame_acc, epoch_acc
-
-    def evaluate(self, val_x, val_y, model):
-        model.eval()
-        with torch.no_grad():
-            val_output = model(val_x)
-            val_loss = self.criterion(val_output.permute(0, 2, 1), val_y)
-            frame_acc, acc = self.get_acc(val_output, val_y)
-            val_cm = self.plot_confusion_matrix(val_output, val_y, range(self.dataset.num_classes))
-
-            _, val_table = self.precision_recall_report(val_output, val_y)
-        return val_loss.item(), frame_acc, acc, val_cm, val_table
-
-    def train_split(self, idx, train_idx, test_idx, model, optimizer, scheduler):
-        print(f"{'='*25}{idx+1} Fold{'='*25}")
-        best_acc, best_epoch = 0, 0
-        test_x, test_y, _ = self.load_segments(test_idx) # segment 고정
-        #print(f"Test file ======== {filename}=========")
-
-        train_pbar = tqdm(range(self.num_epochs), desc=f"Fold {idx+1}")
-
-        for epoch in train_pbar:
-            train_x, train_y, _ = self.load_segments(train_idx)
-            train_loss, train_frame_acc, train_acc = self.train_epoch(train_x, train_y, model, optimizer)
-            wandb.log({"Train Loss": train_loss,
-                        "Train Frame Acc": train_frame_acc,
-                        "Train Acc": train_acc},
-                        step=epoch)
-
-            scheduler.step()
-
-            val_loss, val_frame_acc, val_acc, val_cm, val_table = self.evaluate(test_x, test_y, model)
-
-            wandb.log({"Valid Loss":val_loss,
-                        "Valid Frame Acc":val_frame_acc,
-                        "Valid Acc":val_acc,
-                        "Valid Confusion Matrix": wandb.Image(Image.fromarray(val_cm))},
-                        step = epoch)
-
-            train_pbar.set_description(f"Fold {idx+1} | Epoch {epoch+1} | Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
-            if val_acc > best_acc:
-                best_acc = val_acc
-                best_epoch = epoch
-                torch.save(model.state_dict(), self.best_dir/f'fold{idx+1}_{best_epoch+1}epochs_best_model.pt')
-            if (epoch+1)%10==0: torch.save(model.state_dict(), self.save_dir / f'fold{idx+1}_{epoch+1}epochs.pt')
-
-
-        print(f"Fold {idx+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")
-
-        return best_acc, val_table
-
-    # def train(self):
-    #     fold_best_acc = {}
-    #     for idx, (train_idx, test_idx) in enumerate(self.selection.split(range(len(self.dataset)))):
-    #         print(f"{'='*25}{idx+1} Fold{'='*25}")
-    #         best_acc, best_epoch = 0, 0
-    #         test_x, test_y = self.load_segments(test_idx) # segment 고정
-
-    #         train_pbar = tqdm(range(self.num_epochs), desc=f"Fold {idx+1}")
-    #         for epoch in train_pbar:
-    #             train_x, train_y = self.load_segments(train_idx)
-    #             train_loss, train_frame_acc, train_acc = self.train_epoch(train_x, train_y)
-    #             wandb.log({"Train Loss": train_loss,
-    #                         "Train Frame Acc": train_frame_acc,
-    #                         "Train Acc": train_acc},
-    #                         step=self.num_updated)
-    #             val_loss, val_frame_acc, val_acc = self.evaluate(test_x, test_y)
-    #             wandb.log({"Valid Loss":val_loss,
-    #                        "Valid Frame Acc":val_frame_acc,
-    #                        "Valid Acc":val_acc},
-    #                        step=self.num_updated)
-
-    #             self.num_updated += 1
-
-    #             train_pbar.set_description(f"Fold {idx+1} | Epoch {epoch+1} | Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
-    #             if val_acc > best_acc:
-    #                 best_acc = val_acc
-    #                 best_epoch = epoch
-    #                 torch.save(self.model.state_dict(), self.best_dir/f'fold{idx+1}_{self.num_updated}updated_best_model.pt')
-    #             if (epoch+1)%10==0: torch.save(self.model.state_dict(), self.save_dir / f'fold{idx+1}_epoch{epoch+1}_{self.num_updated}updated.pt')
-
-    #         print(f"Fold {idx+1} Best Accuracy: {best_acc:.4f} at epoch {best_epoch+1}")
+        if wandb.run is not None: wandb.finish()
+        return fold_best_acc

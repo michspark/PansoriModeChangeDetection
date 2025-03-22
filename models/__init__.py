@@ -1,4 +1,4 @@
 from .modules import *
-from .ChromaCNN import *
-from .ChromaCNNLSTM import *
-from .ChromaKrause import *
+from .ChromaCNN import ChromaCNN
+from .ChromaCNNLSTM import ChromaCNNLSTM
+from .GRU import GRUModel

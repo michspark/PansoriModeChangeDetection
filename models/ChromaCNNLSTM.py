@@ -1,19 +1,20 @@
 from .modules import ConvBlock
+
 import torch.nn as nn
 
 class ChromaCNNLSTM(nn.Module):
     def __init__(self, conv_layers, conv_in_channels, pool, fc_layers, fc_in_channels, dropout, num_classes):
         super().__init__()
         self.conv_layers = self.get_conv_layers(conv_layers, conv_in_channels, pool)
-        self.lstm = nn.LSTM(input_size= 1024, hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
+        self.lstm = nn.LSTM(input_size=64*(25//4), hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
         self.fc_layers = self.get_fc_layers(fc_layers, fc_in_channels, dropout, num_classes)
 
     def get_conv_layers(self, conv_layers, in_channels, pool):
         layers = []
         for val in conv_layers:
-            if val=="M":
+            if val=="M": 
                 layers.append(nn.MaxPool2d(kernel_size=eval(pool)))
-            else:
+            else: 
                 layers.append(ConvBlock(in_channels=in_channels, out_channels=val))
                 in_channels = val
         return nn.ModuleList(layers)
@@ -30,7 +31,7 @@ class ChromaCNNLSTM(nn.Module):
                 in_channels = val
         layers.append(nn.Linear(in_features=in_channels, out_features=num_classes))
         return nn.ModuleList(layers)
-
+    
     def forward(self, x):
         for layer in self.conv_layers: x = layer(x)
         b, c, f, t = x.shape

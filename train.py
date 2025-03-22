@@ -29,6 +29,10 @@ def set_seed(seed=42):
 
 @hydra.main(config_path="configs", config_name="unified_config")
 def main(cfg):
+    run_name = f'{cfg.models.cls}_KFold{1}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
+    wandb.init(project='Pansori_Mode_Detection', name=run_name, reinit=True)
+    wandb.config.update(OmegaConf.to_container(cfg))
+
     set_seed(cfg.train.random_seed)
 
     audio_dir = cfg.data.audio_dir

@@ -6,7 +6,6 @@
 labelled_mp3
 pansori_venv/
 notebooks/
-prv_code/
 
 .hydra/
 train/

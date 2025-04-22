@@ -16,7 +16,11 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 
+<<<<<<< HEAD
 DEV = 'cuda' if torch.cuda.is_available() else 'cpu'
+=======
+DEV = 'mps' if torch.mps.is_available() else 'cpu'
+>>>>>>> refs/remotes/origin/jinin/opt
 
 def set_seed(seed=42):
     random.seed(seed)

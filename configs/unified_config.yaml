@@ -1,0 +1,86 @@
+hydra:
+  run:
+    dir: .
+
+# Data sources
+data:
+  audio_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Audio"
+  label_json: "/home/jinin/userdata/Pansori_2025_ISMIR/data/label.json"
+
+# Dataset configuration
+dataset:
+  name: "MelDataset"
+  params:
+    num_classes: 4
+    sr: 16000
+    channels: 'mono'
+    window: 20
+    n_fft: 2048
+    hop_length: 512
+    target_bins: 80
+    aug: True
+
+# Model configuration
+# model:
+#   name: "GRUModel"
+#   params:
+#     num_layers: 3
+#     hidden_dim: 128
+#     input_size: 80
+#     num_classes: 4
+#     dropout: 0.3
+
+# model:
+#   name: "CNNLSTM"
+#   params:
+#     first_conv: 32
+#     num_conv: 3
+#     max_pool: True
+#     num_bins: 80
+#     hidden_dim: 128
+#     dropout: 0.3
+#     num_lstm: 3
+#     num_classes: 4
+
+model:
+  name: "CNNGRU"
+  params:
+    first_conv: 32
+    num_conv: 3
+    max_pool: True
+    num_bins: 80
+    hidden_dim: 128
+    dropout: 0.3
+    num_gru: 3
+    num_classes: 4
+
+# Loss params
+loss:
+  name: FocalLoss
+  params:
+    alpha: 1
+    gamma: 1.5
+    ignore_index: 0
+
+# Training parameters
+train:
+  lr: 5e-4
+  batch_size: 16
+  num_iterations: 4000
+  eval_interval: 200
+  save_interval: 1000
+  random_seed: 42
+  selection: KFold
+
+# Cross-validation parameters
+kfold:
+  n_splits: 5
+  shuffle: True
+  random_state: ${train.random_seed}
+
+loo: None
+
+# Directory paths
+dir:
+  save_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/train/weights"
+  # best_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/train/best_model" 

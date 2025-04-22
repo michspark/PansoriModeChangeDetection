@@ -3,10 +3,10 @@ from .modules import ConvBlock
 import torch.nn as nn
 
 class ChromaCNNLSTM(nn.Module):
-    def __init__(self, conv_layers, conv_in_channels, pool, fc_layers, fc_in_channels, dropout, num_classes):
+    def __init__(self, conv_layers, conv_in_channels, pool, fc_layers, fc_in_channels, dropout, num_classes, num_bins=25):
         super().__init__()
         self.conv_layers = self.get_conv_layers(conv_layers, conv_in_channels, pool)
-        self.lstm = nn.LSTM(input_size=64*(25//4), hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
+        self.lstm = nn.LSTM(input_size=64*(int(num_bins)//4), hidden_size=128, num_layers=1, batch_first=True, bidirectional=True)
         self.fc_layers = self.get_fc_layers(fc_layers, fc_in_channels, dropout, num_classes)
 
     def get_conv_layers(self, conv_layers, in_channels, pool):
@@ -33,6 +33,8 @@ class ChromaCNNLSTM(nn.Module):
         return nn.ModuleList(layers)
     
     def forward(self, x):
+        if x.ndim == 3:
+            x = x.unsqueeze(1)
         for layer in self.conv_layers: x = layer(x)
         b, c, f, t = x.shape
         x = x.permute(0,3,1,2)

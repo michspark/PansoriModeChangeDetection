@@ -1,8 +1,0 @@
-dset: AudioDataset
-
-cfg:
-  num_classes: 4
-  sr: 16000
-  channels: 'mono'
-  window: 20
-  aug: True

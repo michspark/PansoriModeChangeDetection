@@ -7,7 +7,8 @@ class ConvBlock(nn.Module):
                               out_channels=out_channels, 
                               kernel_size=3, 
                               padding='same', 
-                              dilation=(1,2))
+                            #   dilation=(3,1))
+                              dilation=(1,3))
         self.bn = nn.BatchNorm2d(num_features=out_channels)
         self.activation = nn.ReLU()
 

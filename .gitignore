@@ -1,12 +1,20 @@
 .DS_Store
 *.DS_Store
-*.wav
-*.mp3
 
-pansori_venv/
-notebooks/
-prv_code/
+__pycache__/
+.vscode/
+*.pyc
 
 .hydra/
 train/
 wandb/
+
+*.log
+*.wav
+*.mp3
+
+
+source_separated/
+pansori_venv/
+notebooks/
+prv_code/

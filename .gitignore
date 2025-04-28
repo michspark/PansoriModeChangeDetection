@@ -5,6 +5,8 @@ __pycache__/
 .vscode/
 *.pyc
 
+pansori_venv/
+
 .hydra/
 train/
 wandb/
@@ -12,9 +14,12 @@ wandb/
 *.log
 *.wav
 *.mp3
+*.csv
 
+Audio/
+CrepePitch/
+SeparatedAudio/
+PitchShiftedAudio/
 
-source_separated/
-pansori_venv/
+prv_py/
 notebooks/
-prv_code/

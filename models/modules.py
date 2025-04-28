@@ -1,16 +1,25 @@
 import torch.nn as nn
 
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()        
-        self.conv = nn.Conv2d(in_channels=in_channels, 
-                              out_channels=out_channels, 
-                              kernel_size=3, 
-                              padding='same', 
-                            #   dilation=(3,1))
-                              dilation=(1,3))
-        self.bn = nn.BatchNorm2d(num_features=out_channels)
-        self.activation = nn.ReLU()
+class Conv1DBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, padding, dilation):
+        super().__init__()
+        self.conv_norm = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, dilation=dilation),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True),
+            )
 
     def forward(self, x):
-        return self.activation(self.bn(self.conv(x)))
+        return self.conv_norm(x)
+
+class Conv2DBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, padding, dilation):
+        super().__init__()
+        self.conv_norm = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, dilation=dilation),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.conv_norm(x)

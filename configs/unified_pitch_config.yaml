@@ -22,15 +22,15 @@ model:
   params:
     num_layers: 3
     in_channels: 2
-    last_hidden_dim: 256
+    last_hidden_dim: 128
     use_gradual_size: True
 
-    kernel_size: 5
+    kernel_size: 3
     pool_size: False
-    dilation: 7
+    dilation: 1
 
     num_gru: 3
-    hidden_dim: 256
+    hidden_dim: 128
     dropout: 0.3
     num_classes: 4
 

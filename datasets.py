@@ -122,6 +122,9 @@ class AudioDataset(BaseDataset):
         window_samples = self.window * self.sr
         
         for hash_key in self.loaded_hash:
+            if hash_key not in self.loaded_data.keys():
+                self.loaded_hash.remove(hash_key)
+                continue
             audio = self.loaded_data[hash_key]
             audio_length = audio.shape[1]
             
@@ -390,7 +393,6 @@ class PitchDataset(BaseDataset):
             norm_midi = [(mi-float(tonic))/12 for mi in midi]
             freq_conf = torch.tensor(np.stack([norm_midi, confidence], axis=0), dtype=torch.float32)
             loaded_data[hash_key] = freq_conf[:,::self.comp_ratio]
-            # loaded_data[hash_key] = freq_conf
 
         return loaded_data
 

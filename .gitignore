@@ -15,8 +15,10 @@ wandb/
 *.wav
 *.mp3
 *.csv
+*.ipynb
 
 Audio/
+PestoPitch/
 CrepePitch/
 SeparatedAudio/
 PitchShiftedAudio/

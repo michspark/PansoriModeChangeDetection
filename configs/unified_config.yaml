@@ -4,8 +4,8 @@ hydra:
 
 # Data sources
 data:
-  audio_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Audio"
-  label_json: "/home/jinin/userdata/Pansori_2025_ISMIR/data/label.json"
+  data_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/SeparatedAudio"
+  label_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Label"
 
 # Dataset configuration
 dataset:
@@ -18,7 +18,7 @@ dataset:
     n_fft: 2048
     hop_length: 512
     target_bins: 80
-    aug: True
+    aug: False
 
 # Model configuration
 # model:

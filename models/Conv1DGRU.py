@@ -12,8 +12,7 @@ class Conv1DGRU(nn.Module):
         self.kernel_size = config.kernel_size
         self.dilation = config.dilation
         self.num_classes = config.num_classes
-        self.enc = nn.Sequential()
-        self.build()
+        self.enc = self.build()
 
         self.hidden_dim = config.hidden_dim
         self.num_gru = config.num_gru
@@ -22,10 +21,12 @@ class Conv1DGRU(nn.Module):
         self.fc = nn.Linear(self.hidden_dim*2, self.num_classes)
 
     def build(self):
+        enc = nn.Sequential()
         for idx, param in enumerate(self.params):
-            self.enc.add_module(f'conv_{idx}', Conv1DBlock(param['input_channel'], param['output_channel'], 
+            enc.add_module(f'conv_{idx}', Conv1DBlock(param['input_channel'], param['output_channel'], 
                                                            kernel_size=self.kernel_size, padding='same', dilation=self.dilation))
-            if self.config.pool_size: self.enc.add_module(f'pool_{idx}', nn.MaxPool1d(param['max_pool']))
+            if self.config.pool_size: enc.add_module(f'pool_{idx}', nn.MaxPool1d(param['max_pool']))
+        return enc
     
     def forward(self, x):
         x = filter_by_confidence(x) # b,c,t

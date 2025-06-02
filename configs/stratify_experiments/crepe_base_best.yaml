@@ -59,8 +59,8 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back.csv"
+stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back_without_oche.csv"
 
 # Directory paths
 dir:
-  save_dir: "train/crepe"
+  save_dir: "train/stratify"

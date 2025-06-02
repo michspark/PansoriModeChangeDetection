@@ -4,7 +4,7 @@ hydra:
 
 # Data sources
 data:
-  data_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/CrepePitch"
+  data_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/PestoPitch"
   label_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Label"
 
 # Dataset configuration
@@ -14,7 +14,7 @@ dataset:
     num_classes: 4
     frame_rate: 20
     window: 20
-    threshold: 0.0
+    threshold: 0.1
     aug: True
 
 model:
@@ -27,7 +27,7 @@ model:
 
     kernel_size: 3
     pool_size: False
-    dilation: 2
+    dilation: 3
 
     num_gru: 3
     hidden_dim: 128
@@ -40,7 +40,7 @@ loss:
   name: FocalLoss
   params:
     alpha: 1
-    gamma: 0
+    gamma: 1.0
     ignore_index: 0
 
 # Training parameters
@@ -51,7 +51,7 @@ train:
   eval_interval: 200
   save_interval: 1000
   random_seed: 42
-  selection: Stratify # KFold
+  selection: KFold
 
 # Cross-validation parameters
 kfold:
@@ -59,8 +59,7 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back.csv"
 
 # Directory paths
 dir:
-  save_dir: "train/crepe"
+  save_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/train/pesto"

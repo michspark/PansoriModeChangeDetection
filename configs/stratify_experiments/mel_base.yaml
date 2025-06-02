@@ -18,59 +18,44 @@ dataset:
     n_fft: 2048
     hop_length: 512
     target_bins: 80
-    aug: False
+    aug: True
 
-# Model configuration
-# model:
-#   name: "GRUModel"
-#   params:
-#     num_layers: 3
-#     hidden_dim: 128
-#     input_size: 80
-#     num_classes: 4
-#     dropout: 0.3
-
-# model:
-#   name: "CNNLSTM"
-#   params:
-#     first_conv: 32
-#     num_conv: 3
-#     max_pool: True
-#     num_bins: 80
-#     hidden_dim: 128
-#     dropout: 0.3
-#     num_lstm: 3
-#     num_classes: 4
-
+# Model
 model:
-  name: "CNNGRU"
+  name: "Conv2DGRU"
   params:
-    first_conv: 32
-    num_conv: 3
-    max_pool: True
+    num_layers: 3
+    in_channels: 1
     num_bins: 80
+    last_hidden_dim: 128
+    use_gradual_size: False
+
+    kernel_size: 3
+    pool_size: (2,1)
+    dilation: (1,2)
+
+    num_gru: 3
     hidden_dim: 128
     dropout: 0.3
-    num_gru: 3
     num_classes: 4
 
 # Loss params
 loss:
-  name: FocalLoss
+  name: FocalLoss # If alpha=1 gamma=0: FocalLoss -> CrossEntropyLoss
   params:
     alpha: 1
-    gamma: 1.5
+    gamma: 0.0
     ignore_index: 0
 
 # Training parameters
 train:
   lr: 5e-4
-  batch_size: 16
+  batch_size: 32
   num_iterations: 4000
   eval_interval: 200
   save_interval: 1000
   random_seed: 42
-  selection: KFold # Stratify
+  selection: Stratify
 
 # Cross-validation parameters
 kfold:
@@ -78,9 +63,9 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-Stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back.csv"
+stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back.csv"
+
 
 # Directory paths
 dir:
-  save_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/train/weights"
-  # best_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/train/best_model" 
+  save_dir: "train/stratify"

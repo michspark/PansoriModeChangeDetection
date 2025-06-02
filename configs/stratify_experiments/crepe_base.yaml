@@ -20,14 +20,14 @@ dataset:
 model:
   name: "Conv1DGRU"
   params:
-    num_layers: 6
+    num_layers: 3
     in_channels: 2
     last_hidden_dim: 128
     use_gradual_size: False
 
     kernel_size: 3
     pool_size: False
-    dilation: 2
+    dilation: 1
 
     num_gru: 3
     hidden_dim: 128
@@ -59,8 +59,8 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back.csv"
+stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back_without_oche.csv"
 
 # Directory paths
 dir:
-  save_dir: "train/crepe"
+  save_dir: "train/stratify"

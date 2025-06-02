@@ -28,7 +28,7 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
     print(f"Set Seed {seed}")
 
-@hydra.main(config_path="configs", config_name="unified_pitch_config")
+@hydra.main(config_path="configs/stratify_experiments", config_name="mel_base")
 def main(cfg):
     set_seed(cfg.train.random_seed)
 

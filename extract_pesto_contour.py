@@ -137,7 +137,6 @@ def predict_from_files(audio_files, output_path, model, device, num_chunk = 1, c
 
             df = pd.DataFrame(zip(timesteps, preds, amplitude))
             df.to_csv(f"{output_path}/{file.stem}.csv", index=None, header=None)
-            # return predictions
 
 
 def main():
@@ -145,7 +144,7 @@ def main():
     output_path = 'data/PestoPitch'
 
     hop_size = 10.
-    ckpt = 'pesto-full/logs/train/runs/2025-05-10_16-29-08/PESTO/9ki35fve/checkpoints/epoch=49-step=622700.ckpt'
+    ckpt = '/home/jinin/userdata/Pansori_2025_ISMIR/pesto-full/logs/train/runs/2025-05-10_16-29-08/PESTO/9ki35fve/checkpoints/epoch=49-step=622700.ckpt'
     model = load_pesto(ckpt, hop_size)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

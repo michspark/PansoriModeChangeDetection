@@ -19,6 +19,7 @@ class SegmentDataset(Dataset, ABC):
         super().__init__()
         self.sr = sr
         self.window = window
+        self.data_dir = data_dir
 
         self.num_classes = num_classes
         self.label_map = {"창조":0, "아니리":0, "설렁제":1, "경드름":1, "우조":1, "평조":1, "계면조": 2}
@@ -69,7 +70,6 @@ class SegmentDataset(Dataset, ABC):
 class AudioSegmentDataset(SegmentDataset):
     def __init__(self, data_dir, label_dir, sr=16000, channels='mono', num_classes=3, window=20, margin_ratio=1, validation_mode=False, aug=False):
         super().__init__(data_dir, label_dir, sr, num_classes, window, margin_ratio, validation_mode, aug)
-        self.data_dir = data_dir
         self.channels = channels
         self.loaded_data = self.get_data()
 
@@ -133,7 +133,7 @@ class AudioSegmentDataset(SegmentDataset):
                         final_start = end - window_len
                         # print(final_start, final_start+window_len)
                         segment = audio[:, final_start:final_start+window_len]
-                        loaded_data.append(((hash_key, start_seg, end_seg), segment, label))
+                        loaded_data.append(((hash_key, final_start, end_seg), segment, label))
 
                 else:
                     segment = audio[:, start:end]
@@ -307,3 +307,129 @@ class MelSegmentDataset(AudioSegmentDataset):
         assert mel.shape[1] == self.window_frame, f"mel.shape[1] != self.window_frame: {mel.shape[1]} != {self.window_frame}"
         return hash_key, mel, label
 
+
+
+import math
+from collections import Counter
+class PitchSegmentDataset(SegmentDataset):
+    def __init__(self, data_dir, label_dir, sr=100, frame_rate=20, threshold=0.8, num_classes=4, window=20, margin_ratio=1, validation_mode=False, aug=False):
+        super().__init__(data_dir, label_dir, sr, num_classes, window, margin_ratio, validation_mode, aug)
+        self.threshold = threshold
+        self.frame_rate = frame_rate
+        assert 100 % self.frame_rate == 0
+        self.comp_ratio = self.sr // self.frame_rate
+        self.window_frame = self.window * frame_rate
+
+        self.loaded_data = self.get_data(data_dir)
+        # for hash_key in set(self.loaded_label.keys()) - set(self.loaded_data.keys()): self.loaded_hash.remove(hash_key)
+        # self.loaded_label = {key:self.ms_to_frame_label(val) for key, val in self.loaded_label.items()}
+
+        self.slice_indices = []
+        # self.prepare_slice_indices()
+
+
+    def frequency_to_midi(self, frequency):
+        # Convert frequency to MIDI note
+        return 69 + 12 * math.log2(frequency / 440)
+
+
+    def get_data(self, data_dir):
+        loaded_data = []
+        for csv_file in tqdm(list(Path(self.data_dir).glob('*.csv')), desc="Load Contours"):
+            hash_key = unicodedata.normalize('NFC', csv_file.name.split("-")[0])
+            if hash_key not in self.loaded_hash: continue
+
+            hash_df = self.df[self.df['hash_key']==hash_key]
+            segment_meta = hash_df[['start', 'end','label']].to_numpy()
+
+            contour_df = pd.read_csv(csv_file, header=None, names=['time', 'frequency', 'confidence'])
+            frequency, confidence = contour_df['frequency'].values, contour_df['confidence'].values
+            midi = [self.frequency_to_midi(freq) for freq in frequency]
+            tonic_counter = Counter(np.round(midi)[confidence >= self.threshold]).most_common(1)
+            tonic = tonic_counter[0][0]
+            norm_midi = [(mi-float(tonic))/12 for mi in midi]
+            freq_conf = torch.tensor(np.stack([norm_midi, confidence], axis=0), dtype=torch.float32)
+
+            for start_ms, end_ms, label in segment_meta:
+                start, end = int(start_ms*self.sr/1000), int(end_ms*self.sr/1000)
+                segment = freq_conf[:, start:end]
+                segment = segment[:,::self.comp_ratio]
+                label = torch.nn.functional.one_hot(torch.tensor(self.label_map[label]), num_classes=self.num_classes)
+                loaded_data.append(((hash_key, start, end), segment, label))
+
+        return loaded_data
+
+
+    def get_valid_data(self):
+        loaded_data = []
+        for csv_file in tqdm(list(Path(self.data_dir).glob('*.csv')), desc="Load Contours"):
+            hash_key = unicodedata.normalize('NFC', csv_file.name.split("-")[0])
+            if hash_key not in self.loaded_hash: continue
+
+            hash_df = self.df[self.df['hash_key']==hash_key]
+            segment_meta = hash_df[['start', 'end','label']].to_numpy()
+
+            contour_df = pd.read_csv(csv_file, header=None, names=['time', 'frequency', 'confidence'])
+            frequency, confidence = contour_df['frequency'].values, contour_df['confidence'].values
+            midi = [self.frequency_to_midi(freq) for freq in frequency]
+            tonic_counter = Counter(np.round(midi)[confidence >= self.threshold]).most_common(1)
+            tonic = tonic_counter[0][0]
+            norm_midi = [(mi-float(tonic))/12 for mi in midi]
+            freq_conf = torch.tensor(np.stack([norm_midi, confidence], axis=0), dtype=torch.float32)
+
+            for start_ms, end_ms, label in segment_meta:
+                label = torch.nn.functional.one_hot(torch.tensor(self.label_map[label]), num_classes=self.num_classes)
+
+                start, end = int(start_ms*self.sr/1000), int(end_ms*self.sr/1000)
+                segments = freq_conf[:, start:end]
+                segments = segments[:,::self.comp_ratio]
+
+                seg_len = segments.shape[-1]
+                if seg_len > self.window_frame:
+                    current_pos = 0
+                    while current_pos + self.window_frame <= seg_len:
+                        start_seg, end_seg = current_pos, current_pos+self.window_frame
+                        # print(start_seg, end_seg)
+                        segment = segments[:, start_seg:end_seg]
+                        loaded_data.append(((hash_key, start_seg, end_seg), segment, label))
+                        current_pos += self.window_frame
+                    if current_pos < seg_len:
+                        final_start = seg_len - self.window_frame
+                        # print(final_start, final_start+window_len)
+                        segment = segments[:, final_start:final_start+self.window_frame]
+                        loaded_data.append(((hash_key, final_start, final_start+self.window_frame), segment, label))
+
+                else:
+                    segment = freq_conf[:, start:end]
+                    segment = segment[:, ::self.comp_ratio]
+                    loaded_data.append(((hash_key, start, end), segment, label))
+
+        return loaded_data
+
+
+    def __len__(self):
+        return len(self.loaded_data)
+
+
+    def __getitem__(self, idx):
+        (hash_key, start, end), contour, label = self.loaded_data[idx]
+
+        contour_len = contour.shape[-1]
+
+        if contour_len > self.window_frame:
+            start = random.randint(0, min(contour_len, contour_len - self.window_frame))
+            contour = contour[:,start:start+self.window_frame]
+
+        else:
+            num_pad = self.window_frame - contour_len
+            l_pad = num_pad // 2
+            r_pad = num_pad - l_pad
+            contour = torch.nn.functional.pad(contour, (l_pad, r_pad), mode='constant', value=0)
+
+
+        if self.aug and not self.validation_mode and random.random() < 0.5:
+            shift = random.random() * 12 - 6
+            contour = contour.clone()
+            contour[0,:] += shift
+
+        return hash_key, contour, label

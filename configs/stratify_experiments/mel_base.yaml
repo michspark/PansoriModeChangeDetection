@@ -11,7 +11,7 @@ data:
 dataset:
   name: "MelDataset"
   params:
-    num_classes: 4
+    num_classes: 3
     sr: 16000
     channels: 'mono'
     window: 20
@@ -37,7 +37,7 @@ model:
     num_gru: 3
     hidden_dim: 128
     dropout: 0.3
-    num_classes: 4
+    num_classes: 3
 
 # Loss params
 loss:

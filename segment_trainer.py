@@ -27,6 +27,7 @@ class Trainer:
         self.model_state_dict = deepcopy(self.model.state_dict())
         self.optimizer = optimizer
         self.dataset = dataset
+        self.loaded_data = deepcopy(dataset.loaded_data)
         self.device = device
         self.criterion = criterion # nn.CrossEntropyLoss()
 
@@ -83,11 +84,10 @@ class Trainer:
         testset.validation_mode = True
         testset.loaded_data = testset.get_valid_data()
 
-        trainset = deepcopy(self.dataset)
-        train_loaded_data_indices = [idx for idx, tup in enumerate(trainset.loaded_data) if tup[0][0] in train_hash_keys]
-        trainset.loaded_data = [trainset.loaded_data[idx] for idx in train_loaded_data_indices]
+        train_loaded_data_indices = [idx for idx, tup in enumerate(self.dataset.loaded_data) if tup[0][0] in train_hash_keys]
+        self.dataset.loaded_data = [self.dataset.loaded_data[idx] for idx in train_loaded_data_indices]
 
-        return trainset, testset
+        return self.dataset, testset
 
 
     def get_masked_acc(self, output, y):
@@ -258,6 +258,7 @@ class Trainer:
                 if self.global_step >= self.num_iterations: break
             
             pbar.close()
+            self.dataset.loaded_data = self.loaded_data
             # del trainset, testset, train_loader, test_loader
             # gc.collect()
             # torch.cuda.empty_cache()

@@ -1,7 +1,7 @@
 import models
 import losses
-import datasets
-from trainer import Trainer
+import segment_datasets
+from segment_trainer import Trainer
 
 import random
 import datetime
@@ -28,7 +28,7 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
     print(f"Set Seed {seed}")
 
-@hydra.main(config_path="configs/stratify_experiments", config_name="mel_base")
+@hydra.main(config_path="configs/stratify_segment", config_name="crepe_base")
 def main(cfg):
     set_seed(cfg.train.random_seed)
 
@@ -38,7 +38,7 @@ def main(cfg):
 
     dataset_name = cfg.dataset.name
     dataset_params = OmegaConf.to_container(cfg.dataset.params)    
-    dataset_class = getattr(datasets, dataset_name)
+    dataset_class = getattr(segment_datasets, dataset_name)
     dataset = dataset_class(**cfg.data, **dataset_params)
     print(f"Length of dataset: {len(dataset)}")
 

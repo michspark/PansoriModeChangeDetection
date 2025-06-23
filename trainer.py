@@ -67,7 +67,7 @@ class Trainer:
     def init_new_fold(self, fold):
         if wandb.run is not None: wandb.finish()
         run_name = f'{self.config.model.name}_{self.config.dataset.name}_Fold{fold}_{datetime.datetime.now().strftime("%m%d_%H%M")}'
-        wandb.init(project='Pansori_Test', name=run_name, reinit=True)
+        wandb.init(project='Pansori_Segment', name=run_name, reinit=True)
         wandb.config.update(OmegaConf.to_container(self.config))
 
         self.model.load_state_dict(self.model_state_dict)

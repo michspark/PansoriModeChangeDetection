@@ -32,16 +32,16 @@ class Conv2DGRU(nn.Module):
             if self.config.pool_size: enc.add_module(f'pool_{idx}', nn.MaxPool2d(eval(param['max_pool'])))
         return enc
 
-    def forward(self, x):
+    def forward(self, x): #  x.shape = b, 1, 80, 625
         if x.ndim == 3: x = x.unsqueeze(1)
 
         x = self.enc(x) # bcft
-        b, _, _, t = x.shape # b,c,f,t
+        b, _, _, t = x.shape # b,c,f,t (b, 256, f, 625)
         x = x.permute(0,3,1,2) # b,t,c,f
         x = x.reshape(b, t, -1) # b,t,cf
 
-        x, _ = self.gru(x) # b,t,2h
-        x = self.fc(x) # b,t,num_classes
+        x, _ = self.gru(x) # b,t,2h (b, 625, 512)
+        x = self.fc(x) # b,t,num_classes (b, 625, 4)
 
         return x
 

@@ -16,6 +16,8 @@ wandb/
 *.mp3
 *.csv
 *.ipynb
+*.sh
+
 
 Audio/
 PestoPitch/

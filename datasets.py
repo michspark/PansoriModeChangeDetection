@@ -4,8 +4,9 @@ import json
 import random
 import unicodedata
 from pathlib import Path
+from copy import deepcopy
+from abc import abstractmethod
 from collections import Counter
-from abc import abstractmethod, ABC
 
 import numpy as np
 import pandas as pd
@@ -14,27 +15,29 @@ from tqdm import tqdm
 import torch
 import torchaudio
 from torch.utils.data import Dataset
-from torchaudio.transforms import Spectrogram, MelScale, AmplitudeToDB, TimeStretch, FrequencyMasking
+from torchaudio.transforms import TimeStretch, FrequencyMasking
+from torchaudio.transforms import Spectrogram, MelScale, AmplitudeToDB
 
 
-class BaseDataset(Dataset, ABC):
-    def __init__(self, data_dir, label_dir, sr, num_classes=4, window=20, margin_ratio=1.0, validation_mode=False, aug=False):
-        super().__init__()
+
+class BaseDataset(Dataset):
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, window=20, margin_ratio=1, is_valid=False, aug=False):
         self.sr = sr
         self.window = window
 
         self.num_classes = num_classes
-        self.label_map = {"Unknown":0, "창조":1, "아니리":1, "설렁제":2, "경드름":2, "우조":2, "평조":2, "계면조": 3}
+        self.label_map = {"창조":0, "아니리":0, "설렁제":1, "경드름":1, "우조":1, "평조":1, "계면조": 2, "Unknown":3}
+
+        self.data_dir = Path(data_dir)
 
         label_csv = os.path.join(label_dir, 'label.csv')
         self.df = pd.read_csv(label_csv) if os.path.exists(label_csv) else self.get_df(label_dir)
         self.loaded_hash = list(set(self.df['hash_key'].tolist()))
-        self.loaded_label = self.get_label()
         
         self.aug = aug
         self.margin_ratio = margin_ratio
-        self.validation_mode = validation_mode
-
+        self.is_valid = is_valid
+    
 
     def get_df(self, label_dir):
         label_json = f'{label_dir}/label.json'
@@ -59,22 +62,21 @@ class BaseDataset(Dataset, ABC):
         return df
 
 
-    def get_label(self):
+    def get_frame_label(self):
         loaded_label = {}
         for hash_key in tqdm(self.loaded_hash, desc='Load Label'):
             target_df = self.df[self.df['hash_key']==hash_key]
             sample_duration = target_df['duration'].values[0]
             label = torch.zeros(sample_duration, self.num_classes)
-            label[:,0] = 1
+            label[:,self.label_map['Unknown']] = 1
 
             for row in target_df[['start', 'end', 'label']].to_numpy():
                 label[row[0]:row[1], self.label_map[row[2]]] = 1
-                label[row[0]:row[1], 0] = 0
+                label[row[0]:row[1], self.label_map['Unknown']] = 0
 
             loaded_label[hash_key] = label
 
         return loaded_label
-
 
     @abstractmethod
     def get_data(self): return None
@@ -87,37 +89,99 @@ class BaseDataset(Dataset, ABC):
 
 
 
-
-
 class AudioDataset(BaseDataset):
-    def __init__(self, data_dir, label_dir, sr=16000, channels='mono', num_classes=4, window=20, margin_ratio=1, validation_mode=False, aug=False):
-        super().__init__(data_dir, label_dir, sr, num_classes, window, margin_ratio, validation_mode, aug)
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, margin_ratio=1.0, is_valid=False, aug=False):
+        super().__init__(data_dir, label_dir, num_classes, sr, window, margin_ratio, is_valid, aug)
         self.channels = channels
-        self.loaded_data = self.get_data(data_dir)
 
-        self.pitch_shifted_audio = {}
         self.pitch_shift_dir = os.path.join(os.path.dirname(data_dir), "PitchShiftedAudio")
-        if self.aug and os.path.exists(self.pitch_shift_dir): self.load_pitch_shifted_audio()
+        if self.aug and not self.is_valid and os.path.exists(self.pitch_shift_dir): self.pitch_shifted_audio = self.load_pitch_shifted_audio()
+
+
+    def _load_audio(self, audio_file):
+        audio, sr = torchaudio.load(audio_file)
+        audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=self.sr) if self.sr!=sr else audio
+        audio = audio.mean(dim=0, keepdim=True) if self.channels=='mono' else audio
+        return audio
+
+
+    def load_pitch_shifted_audio(self):
+        pitch_shifted_audio = {}
+
+        if not os.path.exists(self.pitch_shift_dir):
+            print(f"Warning: Pitch shift directory {self.pitch_shift_dir} not found.")
+            return None
+
+        for audio_file in tqdm(os.listdir(self.pitch_shift_dir), desc="Load Pitch-Shifted Audio"):
+            if not audio_file.endswith(".wav"): continue
+
+            parts = audio_file.split("_ps_")
+            if len(parts) != 2: continue
+                
+            original_name = parts[0]
+            hash_key = unicodedata.normalize('NFC', original_name.split("-")[0])
+            
+            if hash_key not in self.loaded_hash: continue
+
+            audio = self._load_audio(os.path.join(self.pitch_shift_dir, audio_file))
+            if hash_key not in pitch_shifted_audio: pitch_shifted_audio[hash_key] = []
+            pitch_shifted_audio[hash_key].append(audio)
+        
+        return pitch_shifted_audio
+    
+
+    def apply_audio_augmentation(self, audio):
+        if not self.aug or random.random() > 0.5: return audio
+        # Noise
+        if random.random() < 0.3:
+            noise_level = random.uniform(0.001, 0.005)
+            noise = torch.randn_like(audio) * noise_level
+            audio = audio + noise
+        # Gain
+        if random.random() < 0.3:
+            gain = random.uniform(0.7, 1.3)
+            audio = audio * gain
+            
+        return audio
+    
+
+    @abstractmethod
+    def get_data(self): return None
+
+    # @abstractmethod
+    # def get_split(self): return None
+
+    @abstractmethod
+    def __len__(self): return None
+    
+    @abstractmethod
+    def __getitem__(self, idx): return None
+
+
+
+class AudioFrameDataset(AudioDataset):
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, margin_ratio=1.0, is_valid=False, aug=False):
+        super().__init__(data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
+        self.loaded_data = self.get_data()
+        self.loaded_label = self.get_frame_label()
 
         self.slice_indices = []
         self.prepare_slice_indices()
 
 
-    def get_data(self, data_dir):
+    def get_data(self):
         loaded_data = {}
-        for audio_file in tqdm(list(Path(data_dir).glob('*.wav')), desc="Load Audio"):
+        for audio_file in tqdm(list(self.data_dir.rglob('*.wav')), desc='Load Audio'):
             hash_key = unicodedata.normalize('NFC', audio_file.name.split("-")[0])
             if hash_key not in self.loaded_hash: continue
 
-            audio, sr = torchaudio.load(audio_file)
-            audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=self.sr) if self.sr!=sr else audio
-            audio = audio.mean(dim=0, keepdim=True) if self.channels=='mono' else audio
+            audio = self._load_audio(audio_file)
             loaded_data[hash_key] = audio
-
+        
         return loaded_data
 
 
-    def prepare_slice_indices(self, random_offset=True):
+    def prepare_slice_indices(self, target_hash_keys=None, random_offset=True):
         self.slice_indices = []
         window_samples = self.window * self.sr
         
@@ -125,6 +189,9 @@ class AudioDataset(BaseDataset):
             if hash_key not in self.loaded_data.keys():
                 self.loaded_hash.remove(hash_key)
                 continue
+
+            if target_hash_keys is not None and hash_key not in target_hash_keys: continue
+
             audio = self.loaded_data[hash_key]
             audio_length = audio.shape[1]
             
@@ -140,76 +207,47 @@ class AudioDataset(BaseDataset):
                 final_start = audio_length - window_samples
                 self.slice_indices.append((hash_key, final_start, audio_length))
 
+    def update_slice_indices(self, target_hash_keys):
+        self.prepare_slice_indices(target_hash_keys, random_offset=True)
 
-    def update_slice_indices(self):
-        self.prepare_slice_indices(random_offset=True)
-
-
-    def load_pitch_shifted_audio(self):
-        if not os.path.exists(self.pitch_shift_dir):
-            print(f"Warning: Pitch shift directory {self.pitch_shift_dir} not found.")
-            return None
-            
-        for audio_file in tqdm(os.listdir(self.pitch_shift_dir), desc="Load Pitch-Shifted Audio"):
-            if not audio_file.endswith(".wav"): continue
-
-            parts = audio_file.split("_ps_")
-            if len(parts) != 2: continue
-                
-            original_name = parts[0]
-            hash_key = unicodedata.normalize('NFC', original_name.split("-")[0])
-            
-            if hash_key not in self.loaded_hash: continue
-                
-            audio, sr = torchaudio.load(os.path.join(self.pitch_shift_dir, audio_file))
-            audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=self.sr) if self.sr!=sr else audio
-            audio = audio.mean(dim=0, keepdim=True) if self.channels=='mono' else audio
-
-            if hash_key not in self.pitch_shifted_audio: self.pitch_shifted_audio[hash_key] = []
-            self.pitch_shifted_audio[hash_key].append(audio)
+    def compose_validset(self, target_hash_keys):
+        validset = deepcopy(self)
+        validset.is_valid = True
+        validset.loaded_hash = target_hash_keys
+        validset.loaded_data = {hash_key:self.loaded_data[hash_key] for hash_key in target_hash_keys}
+        validset.loaded_label = {hash_key:self.loaded_label[hash_key] for hash_key in target_hash_keys}
+        return validset
 
 
-    def apply_audio_augmentation(self, audio):
-        if not self.aug or random.random() > 0.5: return audio
-        # Noise
-        if random.random() < 0.3:
-            noise_level = random.uniform(0.001, 0.005)
-            noise = torch.randn_like(audio) * noise_level
-            audio = audio + noise
-        # Gain
-        if random.random() < 0.3:
-            gain = random.uniform(0.7, 1.3)
-            audio = audio * gain
-            
-        return audio
+    def get_split(self, target_hash_keys, split='train'):
+        if split == 'train':
+            self.update_slice_indices(target_hash_keys)
+        else:
+            return self.compose_validset(target_hash_keys)
 
 
     def __len__(self):
-        if self.validation_mode: return len(self.loaded_hash)
+        if self.is_valid: return len(self.loaded_hash)
         return len(self.slice_indices)
     
 
     def __getitem__(self, idx):
-        if self.validation_mode:
+        if self.is_valid:
             hash_key = self.loaded_hash[idx]
             audio, label = self.loaded_data[hash_key], self.loaded_label[hash_key]
             return hash_key, audio, label
         
         hash_key, start, end = self.slice_indices[idx]
-        if self.aug and hash_key in self.pitch_shifted_audio and random.random() < 0.5:
-            audio = random.choice(self.pitch_shifted_audio[hash_key])
+
+        if self.aug and hash_key in self.pitch_shifted_audio and random.random() < 0.5: audio = random.choice(self.pitch_shifted_audio[hash_key])
         else: audio = self.loaded_data[hash_key]
 
-
-        margin_length = int(self.margin_ratio * (end - start))
-        if start - margin_length//2 < 0:
-            end = start + margin_length
+        margin_length = int(self.margin_ratio * (end-start))
+        if start - margin_length//2 < 0: end = start + margin_length
         elif end + margin_length//2 > audio.shape[1]:
             end = audio.shape[1]
             start = end - margin_length
-        else:
-            start = start - margin_length//2
-            end = end + margin_length//2
+        else: start, end = (start - margin_length//2), (end + margin_length//2)
         audio = audio[:, start:end]
 
         start_ms, end_ms = int(start/self.sr*1000), int(end/self.sr*1000)
@@ -221,14 +259,121 @@ class AudioDataset(BaseDataset):
 
 
 
+class AudioSegmentDataset(AudioDataset):
+    def __init__(self, data_dir, label_dir, num_classes=3, sr=16000, channels='mono', window=20, margin_ratio=1.0, is_valid=False, aug=False):
+        super().__init__(data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
+        self.loaded_all = self.get_data()
+        self.loaded_data, self.loaded_label, self.loaded_meta = self.loaded_all
+
+    def get_data(self):
+        loaded_data, loaded_label, loaded_meta = [], [], []
+        for audio_file in tqdm(list(Path(self.data_dir).glob('*.wav')), desc="Load Audio Segment & Label"):
+            hash_key = unicodedata.normalize('NFC', audio_file.name.split("-")[0])
+            if hash_key not in self.loaded_hash: continue
+
+            audio = self._load_audio(audio_file)
+            hash_df = self.df[self.df['hash_key']==hash_key]
+            segment_meta = hash_df[['start', 'end','label']].to_numpy()
+
+            for start_ms, end_ms, label in segment_meta:
+                start, end = int(start_ms * self.sr /1000), int(end_ms * self.sr /1000)
+
+                segment = audio[:, start:end]
+                label = self.label_map[label]
+
+                loaded_data.append(segment)
+                loaded_label.append(label)
+                loaded_meta.append((hash_key, start, end))
+
+        return loaded_data, loaded_label, loaded_meta
 
 
-class MelDataset(AudioDataset):
-    def __init__(self, data_dir, label_dir, sr=16000, channels='mono', num_classes=4, window=20, n_fft=2048, hop_length=512, target_bins=40, margin_ratio=1.6, validation_mode=False, aug=False):
-        super().__init__(data_dir, label_dir, sr, channels, num_classes, window, margin_ratio, validation_mode, aug)
+    def compose_validset(self, target_hash_keys):
+        loaded_data, loaded_label, loaded_meta = [], [], []
+
+        for audio, label, (hash_key, start, end) in zip(self.loaded_all[0], self.loaded_all[1], self.loaded_all[2]):
+            if hash_key not in target_hash_keys: continue
+            seg_len, window_len = (end - start), self.window * self.sr
+
+            if seg_len > window_len:
+                current_pos = 0
+                while current_pos + window_len <= seg_len:
+                    start_seg, end_seg = current_pos, current_pos+window_len
+                    segment = audio[:, start_seg:end_seg]
+                    current_pos += window_len
+
+                    loaded_data.append(segment)
+                    loaded_label.append(label)
+                    loaded_meta.append((hash_key, start+start_seg, start+end_seg))
+
+                if current_pos < seg_len:
+                    final_start = seg_len - window_len
+                    segment = audio[:, final_start:seg_len]
+
+                    loaded_data.append(segment)
+                    loaded_label.append(label)
+                    loaded_meta.append((hash_key, final_start, seg_len))
+
+            else:
+                segment = audio[:, :]
+                loaded_data.append(segment)
+                loaded_label.append(label)
+                loaded_meta.append((hash_key, start, end))
+            
+        return loaded_data, loaded_label, loaded_meta
+
+
+    def get_split(self, target_hash_keys, split='train'):
+        if split == 'train':
+            target_indices = [idx for idx, tup in enumerate(self.loaded_all[2]) if tup[0] in target_hash_keys]
+            self.loaded_data = [self.loaded_all[0][idx] for idx in target_indices]
+            self.loaded_label = [self.loaded_all[1][idx] for idx in target_indices]
+            self.loaded_meta = [self.loaded_all[2][idx] for idx in target_indices]
+        else:
+            validset = deepcopy(self)
+            validset.is_valid = True
+            validset.loaded_data, validset.loaded_label, validset.loaded_meta = self.compose_validset(target_hash_keys)
+            return validset
+
+
+    def __len__(self):
+        return len(self.loaded_data)
+    
+
+    def __getitem__(self, idx):
+        if self.is_valid:
+            audio, label = self.loaded_data[idx], self.loaded_label[idx]
+            hash_key, _, _ = self.loaded_meta[idx]
+            return hash_key, audio, label
+
+        audio, label = self.loaded_data[idx], self.loaded_label[idx]
+        hash_key, start, end = self.loaded_meta[idx]
+
+        if self.aug and not self.is_valid and random.random() < 0.5:  audio = random.choice(self.pitch_shifted_audio[hash_key])[:,start:end]
+        if self.aug and not self.is_valid: audio = self.apply_audio_augmentation(audio)
+
+        audio_len, window_len = audio.shape[-1], self.window * self.sr
+
+        if audio_len > window_len:
+            start = random.randint(0, min(audio_len, audio_len - window_len))
+            audio = audio[:,start:start+window_len]
+
+        return hash_key, audio, label
+
+
+
+class MelDataset():
+    def __init__(self, sr=16000, window=20, n_fft=2048, hop_length=512, target_bins=40, margin_ratio=1.6, is_valid=False, aug=False):
+        self.sr = sr
+        self.window = window
+
         self.hop_length = hop_length
         self.target_bins = target_bins
-        self.window_frame = self.window * sr // hop_length
+        self.window_frame = window * sr // hop_length
+
+        self.margin_ratio = margin_ratio
+        self.is_valid = is_valid
+        self.aug = aug
 
         self.spec_cvt = Spectrogram(n_fft=n_fft, hop_length=hop_length, power=1.0)
         self.spec2mel = MelScale(n_stft=n_fft//2+1, n_mels=target_bins, sample_rate=sr, f_min=80, f_max=2000)
@@ -241,8 +386,7 @@ class MelDataset(AudioDataset):
 
     def get_mel(self, audio):
         spec = self.spec_cvt(audio)
-        if self.aug and not self.validation_mode: 
-            spec, stretch_factor = self.apply_spec_time_stretch(spec)
+        if self.aug and not self.is_valid: spec, stretch_factor = self.apply_spec_time_stretch(spec)
         else: stretch_factor = 1.0
         
         mel = self.spec2mel(spec).squeeze(0)
@@ -320,23 +464,21 @@ class MelDataset(AudioDataset):
         return frame_label
 
 
-    def return_weights(self):
-        label_counter = sum(val.sum(dim=0) for val in self.loaded_label.values())[2:]
-        class_weights = 1.0 / label_counter
-        class_weights = class_weights / class_weights.sum() * len(class_weights)
-        full_class_weights = torch.ones(4)
-        full_class_weights[2:] = class_weights
-        return full_class_weights
 
+class MelFrameDataset(AudioFrameDataset, MelDataset):
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=40, margin_ratio=1.6, is_valid=False, aug=False):
+        AudioFrameDataset.__init__(self, data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
+        MelDataset.__init__(self, sr=sr, window=window, n_fft=n_fft, hop_length=hop_length, target_bins=target_bins, margin_ratio=margin_ratio, is_valid=is_valid, aug=aug)
 
     def __len__(self):
         return super().__len__()
     
     def __getitem__(self, idx):
-        if self.validation_mode:
+        if self.is_valid:
             hash_key, audio, label = super().__getitem__(idx)
             mel, _ = self.get_mel(audio)
             frame_label = self.ms_to_frame_label(label)
+            if mel.shape[-1] != frame_label.shape[0]: mel = mel[:,:frame_label.shape[0]]
             return hash_key, mel, frame_label
 
         else:
@@ -355,23 +497,43 @@ class MelDataset(AudioDataset):
 
 
 
+class MelSegmentDataset(AudioSegmentDataset, MelDataset):
+    def __init__(self, data_dir, label_dir, num_classes=3, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=40, margin_ratio=1.0, is_valid=False, aug=False):
+        AudioSegmentDataset.__init__(self, data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
+        MelDataset.__init__(self, sr=sr, window=window, n_fft=n_fft, hop_length=hop_length, target_bins=target_bins, margin_ratio=margin_ratio, is_valid=is_valid, aug=aug)
+
+    def __len__(self):
+        return super().__len__()
+    
+
+    def __getitem__(self, idx):
+        hash_key, audio, label = super().__getitem__(idx)
+
+        mel, _ = self.get_mel(audio)
+
+        if mel.shape[1] > self.window_frame:
+            start_idx = (mel.shape[1] - self.window_frame) // 2
+            mel = mel[:, start_idx:start_idx+self.window_frame]
+        else:
+            num_pad = self.window_frame - mel.shape[1]
+            l_pad = num_pad // 2
+            r_pad = num_pad - l_pad
+            mel = torch.nn.functional.pad(mel, (l_pad, r_pad), mode='constant', value=0)
+
+        if self.aug and not self.is_valid: mel = self.apply_spec_augmentation(mel)
+        assert mel.shape[1] == self.window_frame, f"mel.shape[1] != self.window_frame: {mel.shape[1]} != {self.window_frame}"
+        return hash_key, mel, label
+
 
 
 class PitchDataset(BaseDataset):
-    def __init__(self, data_dir, label_dir, sr=100, frame_rate=20, threshold=0.8, num_classes=4, window=20, margin_ratio=1, validation_mode=False, aug=False):
-        super().__init__(data_dir, label_dir, sr, num_classes, window, margin_ratio, validation_mode, aug)
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=100, frame_rate=20, threshold=0.8, window=20, margin_ratio=1, is_valid=False, aug=False):
+        super().__init__(data_dir, label_dir, num_classes, sr, window, margin_ratio, is_valid, aug)
         self.threshold = threshold
         self.frame_rate = frame_rate
         assert 100 % self.frame_rate == 0
         self.comp_ratio = self.sr // self.frame_rate
         self.window_frame = self.window * frame_rate
-
-        self.loaded_data = self.get_data(data_dir)
-        for hash_key in set(self.loaded_label.keys()) - set(self.loaded_data.keys()): self.loaded_hash.remove(hash_key)
-        self.loaded_label = {key:self.ms_to_frame_label(val) for key, val in self.loaded_label.items()}
-
-        self.slice_indices = []
-        self.prepare_slice_indices()
 
 
     def frequency_to_midi(self, frequency):
@@ -379,29 +541,76 @@ class PitchDataset(BaseDataset):
         return 69 + 12 * math.log2(frequency / 440)
 
 
-    def get_data(self, data_dir):
+    def shift_contour(self, contour):
+        shift = (random.random() * 12 - 6) / 12
+        contour[0,:] += shift
+
+        return contour
+
+
+    def _load_norm_contour(self, csv_file):
+        contour_df = pd.read_csv(csv_file, header=None, names=['time', 'frequency', 'confidence'])
+        frequency, confidence = contour_df['frequency'].values, contour_df['confidence'].values
+        midi = [self.frequency_to_midi(freq) for freq in frequency]
+
+        tonic_counter = Counter(np.round(midi)[confidence >= self.threshold]).most_common(1)
+        tonic = tonic_counter[0][0]
+
+        norm_midi = [(mi-float(tonic))/12 for mi in midi]
+        freq_conf = torch.tensor(np.stack([norm_midi, confidence], axis=0), dtype=torch.float32)
+
+        return freq_conf
+
+
+    @abstractmethod
+    def get_data(self): return None
+
+    # @abstractmethod
+    # def get_split(self): return None
+
+    @abstractmethod
+    def __len__(self): return None
+    
+    @abstractmethod
+    def __getitem__(self, idx): return None
+
+
+
+class PitchFrameDataset(PitchDataset):
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=100, frame_rate=20, threshold=0.8, window=20, margin_ratio=1, is_valid=False, aug=False):
+        super().__init__(data_dir, label_dir, num_classes, sr, frame_rate, threshold, window, margin_ratio, is_valid, aug)
+
+        self.loaded_data = self.get_data()
+        self.loaded_label = self.get_frame_label()
+
+        for hash_key in set(self.loaded_label.keys()) - set(self.loaded_data.keys()): self.loaded_hash.remove(hash_key)
+        self.loaded_label = {key:self.ms_to_frame_label(val) for key, val in self.loaded_label.items()}
+
+        self.slice_indices = []
+        self.prepare_slice_indices()
+
+
+    def get_data(self):
         loaded_data = {}
-        for csv_file in tqdm(list(Path(data_dir).glob('*.csv')), desc="Load Contours"):
+        for csv_file in tqdm(list(self.data_dir.rglob('*.csv')), desc="Load Contours"):
             hash_key = unicodedata.normalize('NFC', csv_file.name.split("-")[0])
             if hash_key not in self.loaded_hash: continue
 
-            df = pd.read_csv(csv_file, header=None, names=['time', 'frequency', 'confidence'])
-            frequency, confidence = df['frequency'].values, df['confidence'].values
-            midi = [self.frequency_to_midi(freq) for freq in frequency]
-            tonic_counter = Counter(np.round(midi)[confidence >= self.threshold]).most_common(1)
-            tonic = tonic_counter[0][0]
-            norm_midi = [(mi-float(tonic))/12 for mi in midi]
-            freq_conf = torch.tensor(np.stack([norm_midi, confidence], axis=0), dtype=torch.float32)
+            freq_conf = self._load_norm_contour(csv_file)
+
             loaded_data[hash_key] = freq_conf[:,::self.comp_ratio]
 
         return loaded_data
 
 
-    def prepare_slice_indices(self, random_offset=True):
+    def prepare_slice_indices(self, target_hash_keys=None, random_offset=True):
         self.slice_indices = []
         window_samples = self.window * self.frame_rate
-        
+
         for hash_key in self.loaded_hash:
+
+            if target_hash_keys is not None and hash_key not in target_hash_keys: continue
+
             contour = self.loaded_data[hash_key]
             contour_length = contour.shape[1]
             
@@ -417,9 +626,24 @@ class PitchDataset(BaseDataset):
                 final_start = contour_length - window_samples
                 self.slice_indices.append((hash_key, final_start, contour_length))
 
+    def update_slice_indices(self, target_hash_keys):
+        self.prepare_slice_indices(target_hash_keys, random_offset=True)
 
-    def update_slice_indices(self):
-        self.prepare_slice_indices(random_offset=True)
+
+    def compose_validset(self, target_hash_keys):
+        validset = deepcopy(self)
+        validset.is_valid = True
+        validset.loaded_hash = [hash_key for hash_key in target_hash_keys if hash_key in self.loaded_hash]
+        validset.loaded_data = {hash_key:self.loaded_data[hash_key] for hash_key in target_hash_keys if hash_key in self.loaded_hash}
+        validset.loaded_label = {hash_key:self.loaded_label[hash_key] for hash_key in target_hash_keys if hash_key in self.loaded_hash}
+        return validset
+
+
+    def get_split(self, target_hash_keys, split='train'):
+        if split == 'train':
+            self.update_slice_indices(target_hash_keys)
+        else:
+            return self.compose_validset(target_hash_keys)
 
 
     def ms_to_frame_label(self, ms_label):
@@ -446,17 +670,18 @@ class PitchDataset(BaseDataset):
 
 
     def __len__(self):
-        if self.validation_mode:
-            return len(self.loaded_hash)
+        if self.is_valid: return len(self.loaded_hash)
         return len(self.slice_indices)
 
 
     def __getitem__(self, idx):
-        if self.validation_mode:
+        if self.is_valid:
             hash_key = self.loaded_hash[idx]
             contour, label = self.loaded_data[hash_key], self.loaded_label[hash_key]
+
             if contour.shape[1] > label.shape[0]: contour = contour[:,:label.shape[0]]
             elif contour.shape[1] < label.shape[0]: label = label[:contour.shape[1]]
+
             return hash_key, contour, label
 
         hash_key, start, end = self.slice_indices[idx]
@@ -465,14 +690,13 @@ class PitchDataset(BaseDataset):
         elif contour.shape[1] < label.shape[0]: label = label[:contour.shape[1]]
 
         margin_length = int(self.margin_ratio * (end - start))
-        if start - margin_length//2 < 0:
-            end = start + margin_length
+        if start - margin_length//2 < 0: end = start + margin_length
         elif end + margin_length//2 > contour.shape[1]:
             end = contour.shape[1]
             start = end - margin_length
         else:
-            start = start - margin_length//2
-            end = end + margin_length//2
+            start, end = (start - margin_length//2), (end + margin_length//2)
+
         contour = contour[:, start:end]
         label = label[start:end]
 
@@ -481,10 +705,119 @@ class PitchDataset(BaseDataset):
         label = label[start_idx:start_idx+self.window_frame]
 
         if self.aug and random.random() < 0.5:
-            shift = random.random() * 12 - 6
-            contour = contour.clone()
-            contour[0,:] += shift
+            contour = self.shift_contour(contour)
 
         assert label.shape[0] == contour.shape[1], f"label.shape[0] != contour.shape[1]: {label.shape[0]} != {contour.shape[1]}"
+
+        return hash_key, contour, label
+
+
+
+class PitchSegmentDataset(PitchDataset):
+    def __init__(self, data_dir, label_dir, num_classes=3, sr=100, frame_rate=20, threshold=0.8, window=20, margin_ratio=1, is_valid=False, aug=False):
+        super().__init__(data_dir, label_dir, num_classes, sr, frame_rate, threshold, window, margin_ratio, is_valid, aug)
+        self.loaded_all = self.get_data()
+        self.loaded_data, self.loaded_label, self.loaded_meta = self.loaded_all
+        for hash_key in set(self.loaded_hash) - set([m[0] for m in self.loaded_meta]): self.loaded_hash.remove(hash_key)
+
+    def frequency_to_midi(self, frequency):
+        # Convert frequency to MIDI note
+        return 69 + 12 * math.log2(frequency / 440)
+
+
+    def get_data(self):
+        loaded_data, loaded_label, loaded_meta = [], [], []
+        for csv_file in tqdm(list(self.data_dir.rglob('*.csv')), desc="Load Contours"):
+            hash_key = unicodedata.normalize('NFC', csv_file.name.split("-")[0])
+            if hash_key not in self.loaded_hash: continue
+
+            hash_df = self.df[self.df['hash_key']==hash_key]
+            segment_meta = hash_df[['start', 'end','label']].to_numpy()
+
+            freq_conf = self._load_norm_contour(csv_file)
+
+            for start_ms, end_ms, label in segment_meta:
+                start, end = int(start_ms*self.sr/1000), int(end_ms*self.sr/1000)
+                segment = freq_conf[:, start:end]
+                segment = segment[:,::self.comp_ratio]
+                label = self.label_map[label]
+
+                loaded_data.append(segment)
+                loaded_label.append(label)
+                loaded_meta.append((hash_key, start, end))
+
+        return loaded_data, loaded_label, loaded_meta
+
+
+    def compose_validset(self, target_indices):
+        loaded_data, loaded_label, loaded_meta = [], [], []
+
+        for contour, label, (hash_key, start, end) in zip(self.loaded_all[0], self.loaded_all[1], self.loaded_all[2]):
+            if hash_key not in target_indices: continue
+            seg_len, window_len = contour.shape[-1], self.window_frame
+
+            if seg_len > window_len:
+                current_pos = 0
+                while current_pos + window_len <= seg_len:
+                    start_seg, end_seg = current_pos, current_pos+window_len
+                    segment = contour[:, start_seg:end_seg]
+                    current_pos += window_len
+
+                    loaded_data.append(segment)
+                    loaded_label.append(label)
+                    loaded_meta.append((hash_key, start+start_seg, start+end_seg))
+
+                if current_pos < seg_len:
+                    final_start = seg_len - window_len
+                    segment = contour[:, final_start:seg_len]
+
+                    loaded_data.append(segment)
+                    loaded_label.append(label)
+                    loaded_meta.append((hash_key, final_start, seg_len))
+
+            else:
+                segment = contour[:, :]
+                loaded_data.append(segment)
+                loaded_label.append(label)
+                loaded_meta.append((hash_key, start_seg, end_seg))
+            
+        return loaded_data, loaded_label, loaded_meta
+
+
+    def get_split(self, target_hash_keys, split='train'):
+        if split == 'train':
+            target_indices = [idx for idx, tup in enumerate(self.loaded_all[2]) if tup[0] in target_hash_keys]
+            self.loaded_data = [self.loaded_all[0][idx] for idx in target_indices]
+            self.loaded_label = [self.loaded_all[1][idx] for idx in target_indices]
+            self.loaded_meta = [self.loaded_all[2][idx] for idx in target_indices]
+        else:
+            validset = deepcopy(self)
+            validset.is_valid = True
+            validset.loaded_data, validset.loaded_label, validset.loaded_meta = self.compose_validset(target_hash_keys)
+            return validset
+
+
+    def __len__(self):
+        return len(self.loaded_data)
+
+
+    def __getitem__(self, idx):
+        contour, label = self.loaded_data[idx], self.loaded_label[idx]
+        hash_key, start, end = self.loaded_meta[idx]
+
+        contour_len = contour.shape[-1]
+
+        if contour_len > self.window_frame:
+            start = random.randint(0, min(contour_len, contour_len - self.window_frame))
+            contour = contour[:,start:start+self.window_frame]
+
+        else:
+            num_pad = self.window_frame - contour_len
+            l_pad = num_pad // 2
+            r_pad = num_pad - l_pad
+            contour = torch.nn.functional.pad(contour, (l_pad, r_pad), mode='constant', value=0)
+
+        if self.aug and not self.is_valid and random.random() < 0.5:
+            contour = self.shift_contour(contour)
 
         return hash_key, contour, label

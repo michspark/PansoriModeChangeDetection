@@ -29,6 +29,7 @@ class Conv2DGRU(nn.Module):
         for idx, param in enumerate(self.params):
             enc.add_module(f'conv_{idx}', Conv2DBlock(param['input_channel'], param['output_channel'], 
                                                            kernel_size=self.kernel_size, padding='same', dilation=eval(self.dilation)))
+            if self.config.cnn_dropout: enc.add_module(f'dropout_{idx}', nn.Dropout2d(self.config.cnn_dropout))
             if self.config.pool_size: enc.add_module(f'pool_{idx}', nn.MaxPool2d(eval(param['max_pool'])))
         return enc
 
@@ -77,6 +78,7 @@ class SegConv2DGRU(nn.Module):
         for idx, param in enumerate(self.params):
             enc.add_module(f'conv_{idx}', Conv2DBlock(param['input_channel'], param['output_channel'], 
                                                            kernel_size=self.kernel_size, padding='same', dilation=eval(self.dilation)))
+            if self.config.cnn_dropout: enc.add_module(f'dropout_{idx}', nn.Dropout2d(self.config.cnn_dropout))
             if self.config.pool_size: enc.add_module(f'pool_{idx}', nn.MaxPool2d(eval(param['max_pool'])))
         return enc
 

@@ -81,7 +81,7 @@ class Trainer:
                 test_hash_keys = [self.dataset.loaded_hash[i] for i in test_idx]
                 selection.append([train_hash_keys, test_hash_keys])
 
-        elif self.config.train.selection == 'Stratify':
+        elif self.config.train.selection == 'Stratify': # Madang
             hash_dict = {}
             df = pd.read_csv(self.config.stratify)
             for back in set(df['back']): hash_dict[back] = df[df['back']==back]['hash_key'].tolist()
@@ -93,6 +93,21 @@ class Trainer:
                 train_hash_keys = list(set(self.dataset.loaded_hash)-set(test_hash_keys))
                 selection.append([train_hash_keys, test_hash_keys])
 
+        elif self.config.train.selection == 'Artist':
+            selection = []
+            df = pd.read_csv('data/Stratify/stratify.csv')
+
+            folds = sorted(set(df['artist_stratify']))
+            for fold in folds:
+                print(set(df[df['artist_stratify']==fold]['artist'].tolist()))
+                all_hash_keys = set(df['hash_key'].tolist())
+
+                test_hash_keys = df[df['artist_stratify']==fold]['hash_key'].tolist()
+                valid_hash_keys = df[df['artist_stratify']==(fold+1)]['hash_key'].tolist() if fold<(len(folds)-1) else df[df['artist_stratify']==0]['hash_key'].tolist()
+                train_hash_keys = list(all_hash_keys-set(test_hash_keys)-set(valid_hash_keys))
+
+                selection.append([train_hash_keys, valid_hash_keys, test_hash_keys])
+
         else: Exception("Have to select config.train.selection: [KFold, Stratify]")
 
         return selection
@@ -101,13 +116,22 @@ class Trainer:
     def init_new_fold(self, fold):
         if wandb.run is not None: wandb.finish()
         run_name = f"{self.config.data.data_dir.split('/')[-1]}_{self.config.model.name}_{self.config.dataset.name}_Fold{fold}_{T}"
-        wandb.init(project='Pansori_Fin', name=run_name, group=f'{self.config.dataset.name}_{T}', reinit=True)
+        wandb.init(project='Pansori_Artist', name=run_name, group=f'{self.config.dataset.name}_{self.config.train.selection}_{T}', reinit=True)
         wandb.config.update(OmegaConf.to_container(self.config))
 
         self.model.load_state_dict(self.model_state_dict)
         self.optimizer = torch.optim.Adam(self.model.parameters(), self.config.train.lr)
         print(f"{'='*25}{fold} Fold{'='*25}")
 
+
+    def split_train_valid_test(self, hash_keys):
+        if len(hash_keys)==2:
+            train_hash_keys, test_hash_keys = hash_keys
+            train_hash_keys, valid_hash_keys = train_test_split(train_hash_keys, test_size=0.1, random_state=self.config.train.random_seed, shuffle=True)
+        elif len(hash_keys)==3:
+            train_hash_keys, valid_hash_keys, test_hash_keys = hash_keys
+        
+        return train_hash_keys, valid_hash_keys, test_hash_keys
 
     def get_masked_acc(self, output, y, target_mask='Unknown'):
         mask = (y!=self.dataset.label_map[target_mask])
@@ -172,15 +196,15 @@ class FrameTrainer(Trainer):
         selection = self.init_selection()
 
         # Start fold loop
-        for fold, (train_hash_keys, test_hash_keys) in enumerate(selection, start=1):
+        for fold, hash_keys in enumerate(selection, start=1):
             # init fold wandb, model, & optimizer
             self.init_new_fold(fold)
 
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0
 
-            # Get train-test split
-            train_hash_keys, valid_hash_keys = train_test_split(train_hash_keys, test_size=0.1, random_state=self.config.train.random_seed, shuffle=True)
+            # Get train-test split            
+            train_hash_keys, valid_hash_keys, test_hash_keys = self.split_train_valid_test(hash_keys)
             self.dataset.get_split(train_hash_keys, split='train')
             validset = self.dataset.get_split(valid_hash_keys, split='valid')
             testset = self.dataset.get_split(test_hash_keys, split='test')
@@ -223,41 +247,6 @@ class FrameTrainer(Trainer):
                 train_loader.dataset.get_split(train_hash_keys, split='train')
                 current_epoch += 1
 
-                # try: _, x, y = next(train_iter)
-                # except StopIteration: 
-                #     # update train iter
-                #     train_loader.dataset.get_split(train_hash_keys, split='train')
-                #     train_iter = iter(train_loader)
-                #     _, x, y = next(train_iter)
-                #     current_epoch += 1
-
-                # loss, batch_acc, batch_acc_masked = self.train_batch(x, y)
-                # wandb.log({"Train/Loss": loss, "Train/ACC": batch_acc, "Train/Masked Acc": batch_acc_masked}, step=self.global_step)
-                
-                # self.global_step += 1
-                # pbar.update(1)
-                # pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Loss: {loss:.4f}, Best Acc : {best_acc:.4f}")
-
-
-                # # Evaluate at specified intervals
-                # if self.global_step % self.eval_interval == 0:
-                #     # Evaluate on validation set
-                #     val_loss, val_acc, val_acc_masked, cm = self.evaluate(validset)
-                #     wandb.log({"Valid/Loss": val_loss, "Valid/Acc": val_acc, "Valid/Masked Acc": val_acc_masked, "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
-                #     pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val Masked Acc: {val_acc_masked:.4f}")
-                    
-                #     if val_acc_masked > best_acc:
-                #         best_acc = val_acc_masked
-                #         best_iteration = self.global_step
-                #         torch.save(self.model.state_dict(), self.save_dir/f'fold{fold}_best_model.pt')
-                #         print(f"Epoch {current_epoch} with {len(self.dataset.slice_indices)} segments, Best Acc {best_acc:.4f}")
-                
-                # # Save checkpoints at specified intervals
-                # if self.global_step % self.save_interval == 0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold}_{self.global_step}_iter.pt')
-
-                # # Break
-                # if self.global_step >= self.num_iterations: break
-            
             pbar.close()
             print(f"Fold {fold} Best Accuracy: {best_acc:.4f} at iteration {best_iteration}")
 
@@ -323,14 +312,14 @@ class SegmentTrainer(Trainer):
         fold_best_acc = {}
         selection = self.init_selection()
 
-        for fold, (train_hash_keys, test_hash_keys) in enumerate(selection, start=1):
+        for fold, hash_keys in enumerate(selection, start=1):
             self.init_new_fold(fold)
 
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0
 
             # Get train-test split
-            train_hash_keys, valid_hash_keys = train_test_split(train_hash_keys, test_size=0.1, random_state=self.config.train.random_seed, shuffle=True)
+            train_hash_keys, valid_hash_keys, test_hash_keys = self.split_train_valid_test(hash_keys)
             validset = self.dataset.get_split(valid_hash_keys, split='valid')
             testset = self.dataset.get_split(test_hash_keys, split='test')
             self.dataset.get_split(train_hash_keys, split='train')

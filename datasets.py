@@ -779,7 +779,7 @@ class PitchSegmentDataset(PitchDataset):
                 segment = contour[:, :]
                 loaded_data.append(segment)
                 loaded_label.append(label)
-                loaded_meta.append((hash_key, start_seg, end_seg))
+                loaded_meta.append((hash_key, start, end))
             
         return loaded_data, loaded_label, loaded_meta
 

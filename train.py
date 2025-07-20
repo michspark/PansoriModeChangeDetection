@@ -30,7 +30,7 @@ def set_seed(seed=42):
     print(f"Set Seed {seed}")
 
 
-@hydra.main(config_path="configs/frame", config_name="pesto_base")
+@hydra.main(config_path="configs/frame", config_name="crepe_best")
 def main(cfg):
     set_seed(cfg.train.random_seed)
 

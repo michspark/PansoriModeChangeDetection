@@ -26,7 +26,7 @@ model:
   params:
     num_layers: 3
     in_channels: 1
-    num_bins: 80
+    num_bins: ${dataset.params.target_bins}
 
     last_hidden_dim: 128
     use_gradual_size: False

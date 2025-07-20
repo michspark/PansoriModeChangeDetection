@@ -30,12 +30,12 @@ model:
     num_frames: (${dataset.params.window}*${dataset.params.sr}/${dataset.params.hop_length})
 
     last_hidden_dim: 128
-    use_gradual_size: True
+    use_gradual_size: False
 
     kernel_size: 3
     pool_size: (2,1) # (2)
     dilation: (1,2)
-    cnn_dropout: 0.5
+    cnn_dropout: 0
 
     num_gru: 3
     hidden_dim: 128
@@ -57,7 +57,7 @@ train:
   batch_size: 32
   num_iterations: 5000
   eval_interval: 200
-  save_interval: 1000
+  save_interval: 25000
   random_seed: 42
   selection: Stratify
 
@@ -67,9 +67,9 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back.csv"
+stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify.csv"
 
 
 # Directory paths
 dir:
-  save_dir: "weights/segment"
+  save_dir: "weights/sweep"

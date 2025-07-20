@@ -9,31 +9,31 @@ data:
 
 # Dataset configuration
 dataset:
-  name: "PitchSegmentDataset"
+  name: "PitchFrameDataset"
   params:
-    num_classes: 3
+    num_classes: 4
     frame_rate: 20
     window: 20
     threshold: 0.0
     aug: True
 
 model:
-  name: "SegConv1DGRU"
+  name: "Conv1DGRU"
   params:
     num_layers: 3
     in_channels: 2
 
     last_hidden_dim: 128
-    use_gradual_size: True
+    use_gradual_size: False
 
     kernel_size: 3
-    pool_size: 2 # False
+    pool_size: False
     dilation: 1
-    cnn_dropout: 0.5
+    cnn_dropout: 0
 
     num_gru: 3
     hidden_dim: 128
-    dropout: 0.3
+    dropout: 0.0
 
     num_frames : ${dataset.params.window}*${dataset.params.frame_rate}
     num_classes: ${dataset.params.num_classes}
@@ -44,19 +44,19 @@ loss:
   name: FocalLoss
   params:
     alpha: 1
-    gamma: 0
-    ignore_index: -100
+    gamma: 0.0
+    ignore_index: 3
 
 # Training parameters
 train:
-  trainer: "SegmentTrainer"
+  trainer: "FrameTrainer"
   lr: 5e-4
   batch_size: 32
   num_iterations: 5000
   eval_interval: 200
   save_interval: 1000
   random_seed: 42
-  selection: Stratify # KFold
+  selection: Stratify # Artist # Stratify # KFold
 
 # Cross-validation parameters
 kfold:
@@ -64,8 +64,8 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back_without_oche.csv"
+stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify.csv"
 
 # Directory paths
 dir:
-  save_dir: "weights/segment"
+  save_dir: "weights/frame"

@@ -216,7 +216,7 @@ class FrameTrainer(Trainer):
                             best_acc = val_acc_masked
                             best_iteration = self.global_step
                             torch.save(self.model.state_dict(), self.save_dir/f'fold{fold}_best_model.pt')
-                            print(f"Epoch {current_epoch} with {len(self.dataset.slice_indices)} segments, Best Acc {best_acc:.4f}")
+                            print(f"Epoch {current_epoch} with {len(self.dataset.training_instances)} segments, Best Acc {best_acc:.4f}")
 
                     # Save checkpoints at specified intervals
                     if self.global_step % self.save_interval == 0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold}_{self.global_step}_iter.pt')

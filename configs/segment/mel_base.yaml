@@ -4,8 +4,8 @@ hydra:
 
 # Data sources
 data:
-  data_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/SeparatedAudio"
-  label_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Label"
+  data_dir: "/home/sangheon/Desktop/Pansori_Data/Audio"
+  label_dir: "/home/sangheon/Desktop/PansoriModeChangeDetection/data/Label"
 
 # Dataset configuration
 dataset:
@@ -56,10 +56,10 @@ train:
   lr: 5e-4
   batch_size: 32
   num_iterations: 5000
-  eval_interval: 200
-  save_interval: 25000
+  eval_interval: 10
+  save_interval: 1000
   random_seed: 42
-  selection: Stratify
+  selection: KFold
 
 # Cross-validation parameters
 kfold:
@@ -67,9 +67,9 @@ kfold:
   shuffle: True
   random_state: ${train.random_seed}
 
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify.csv"
+stratify: "/home/sangheon/Desktop/PansoriModeChangeDetection/data/Stratify/stratify.csv"
 
 
 # Directory paths
 dir:
-  save_dir: "weights/sweep"
+  save_dir: "weights/segment"

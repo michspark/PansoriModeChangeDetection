@@ -1,21 +1,17 @@
 import datetime
 from pathlib import Path
 from copy import deepcopy
-
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold
-
 import seaborn as sns
 from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
-
 import torch
 from torch.utils.data import DataLoader
-
 import wandb
 from tqdm import tqdm
 from omegaconf import OmegaConf
@@ -46,9 +42,9 @@ class Trainer:
     def plot_confusion_matrix(self, output, y, class_names):
         true_flat = y.reshape(-1).cpu().numpy()
         pred_flat = output.reshape(-1).cpu().numpy()
-        
+
         assert len(true_flat) == len(pred_flat), f"Length mismatch: {len(true_flat)} vs {len(pred_flat)}"
-        
+
         cm = confusion_matrix(true_flat, pred_flat, normalize='true') # , labels=list(range(self.dataset.num_classes)))
 
         fig = plt.figure(figsize=(14, 14))
@@ -59,7 +55,7 @@ class Trainer:
         plt.xlabel('Predicted Label', size=16)
         plt.xticks(fontsize=12)
         plt.yticks(fontsize=12)
-        plt.tight_layout() 
+        plt.tight_layout()
         buf = BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
@@ -67,7 +63,7 @@ class Trainer:
         image_np = np.array(image)
         plt.close(fig)
         buf.close()
-        return image_np  
+        return image_np
 
 
     def init_selection(self):
@@ -108,7 +104,13 @@ class Trainer:
 
                 selection.append([train_hash_keys, valid_hash_keys, test_hash_keys])
 
-        else: Exception("Have to select config.train.selection: [KFold, Stratify]")
+        elif self.config.train.selection == 'RandomSplit':
+            all_keys = list(self.dataset.loaded_hash)
+            train_val_keys, test_keys = train_test_split(all_keys, test_size=0.1, random_state=self.config.train.random_seed, shuffle=True)
+            train_keys, val_keys = train_test_split(train_val_keys, test_size=1/9, random_state=self.config.train.random_seed, shuffle=True)
+            selection = [[train_keys, val_keys, test_keys]]
+
+        else: Exception("Have to select config.train.selection: [KFold, Stratify, RandomSplit]")
 
         return selection
 
@@ -127,10 +129,10 @@ class Trainer:
     def split_train_valid_test(self, hash_keys):
         if len(hash_keys)==2:
             train_hash_keys, test_hash_keys = hash_keys
-            train_hash_keys, valid_hash_keys = train_test_split(train_hash_keys, test_size=0.1, random_state=self.config.train.random_seed, shuffle=True)
+            train_hash_keys, valid_hash_keys = train_test_split(train_hash_keys, test_size=1/9, random_state=self.config.train.random_seed, shuffle=True)
         elif len(hash_keys)==3:
             train_hash_keys, valid_hash_keys, test_hash_keys = hash_keys
-        
+
         return train_hash_keys, valid_hash_keys, test_hash_keys
 
     def get_masked_acc(self, output, y, target_mask='Unknown'):
@@ -141,6 +143,39 @@ class Trainer:
         acc = (output == y).float().mean().cpu().item()
         acc_masked = ((pred_masked == y).sum()/total_valid).cpu().item()
         return acc, acc_masked
+
+    def get_per_class_acc(self, output, y):
+        per_class_acc = {}
+        label_map = self.dataset.label_map
+        ignore_idx = label_map['Unknown']
+        inv_label_map = {v: k for k, v in label_map.items() if v != ignore_idx}
+        for cls_idx, cls_name in inv_label_map.items():
+            mask = (y == cls_idx)
+            if mask.sum() == 0:
+                per_class_acc[cls_name] = 0.0
+            else:
+                per_class_acc[cls_name] = ((output[mask] == cls_idx).float().sum() / mask.sum()).cpu().item()
+        return per_class_acc
+    
+    def get_per_class_f1(self, output, y, ignore_label=None):
+        label_map = self.dataset.label_map
+        ignore_idx = label_map.get(ignore_label) if ignore_label else None
+        inv_label_map = {v: k for k, v in label_map.items() if v != ignore_idx}
+
+        true_np = y.cpu().numpy()
+        pred_np = output.cpu().numpy()
+
+        if ignore_idx is not None:
+            mask = true_np != ignore_idx
+            true_np = true_np[mask]
+            pred_np = pred_np[mask]
+
+        labels = sorted(inv_label_map.keys())
+        f1_scores = f1_score(true_np, pred_np, labels=labels, average=None, zero_division=0)
+        macro_f1 = f1_score(true_np, pred_np, labels=labels, average='macro', zero_division=0)
+
+        per_class_f1 = {inv_label_map[lbl]: float(f1_scores[i]) for i, lbl in enumerate(labels)}
+        return per_class_f1, macro_f1
 
 
 
@@ -156,20 +191,20 @@ class FrameTrainer(Trainer):
         loss = self.criterion(outputs.permute(0,2,1), y.argmax(dim=-1))
         loss.backward()
         self.optimizer.step()
-        
+
         batch_outputs = outputs.detach().argmax(dim=-1).view(-1)
         batch_acc, batch_acc_masked = self.get_masked_acc(batch_outputs, y.argmax(dim=-1).view(-1), target_mask='Unknown')
-        
+
         return loss.item(), batch_acc, batch_acc_masked
 
 
     def evaluate(self, dataset):
         self.model.eval()
         dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-        
+
         total_loss = 0
         all_outputs, all_labels = [], []
-        
+
         with torch.no_grad():
             for batch in dataloader:
                 _, x, y = batch
@@ -184,9 +219,11 @@ class FrameTrainer(Trainer):
         all_outputs, all_labels = torch.cat(all_outputs, dim=1).argmax(dim=-1).view(-1), torch.cat(all_labels, dim=1).argmax(dim=-1).view(-1)
         valid_loss = total_loss / len(dataset)
         valid_acc, valid_acc_masked = self.get_masked_acc(all_outputs, all_labels, target_mask='Unknown')
+        per_class_acc = self.get_per_class_acc(all_outputs, all_labels)
+        per_class_f1, macro_f1 = self.get_per_class_f1(all_outputs, all_labels, ignore_label='Unknown')
         cm = self.plot_confusion_matrix(all_outputs, all_labels, range(dataset.num_classes))
 
-        return valid_loss, valid_acc, valid_acc_masked, cm
+        return valid_loss, valid_acc, valid_acc_masked, per_class_acc, per_class_f1, macro_f1, cm
 
 
     def train(self):
@@ -203,12 +240,12 @@ class FrameTrainer(Trainer):
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0
 
-            # Get train-test split            
+            # Get train-test split
             train_hash_keys, valid_hash_keys, test_hash_keys = self.split_train_valid_test(hash_keys)
             self.dataset.get_split(train_hash_keys, split='train')
             validset = self.dataset.get_split(valid_hash_keys, split='valid')
             testset = self.dataset.get_split(test_hash_keys, split='test')
-            print('Trainset:', len(self.dataset), 'Validset:', len(validset), 'Testset:', len(testset))
+            print('Trainset:', len(train_hash_keys), 'Validset:', len(valid_hash_keys), 'Testset:', len(test_hash_keys))
             train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
             # train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
             # train_iter = iter(train_loader)
@@ -228,15 +265,21 @@ class FrameTrainer(Trainer):
 
                     # Evaluate on validation set
                     if self.global_step % self.eval_interval == 0:
-                        val_loss, val_acc, val_acc_masked, cm = self.evaluate(validset)
-                        wandb.log({"Valid/Loss": val_loss, "Valid/Acc": val_acc, "Valid/Masked Acc": val_acc_masked, "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+                        print(f"\n[Step {self.global_step}] Running evaluation...")
+                        val_loss, val_acc, val_acc_masked, per_class_acc, per_class_f1, macro_f1, cm = self.evaluate(validset)
+                        print(f"[Step {self.global_step}] Eval done. Val Masked Acc: {val_acc_masked:.4f}")
+                        wandb.log({"Valid/Loss": val_loss, "Valid/Acc": val_acc, "Valid/Masked Acc": val_acc_masked,
+                                   "Valid/Macro F1": macro_f1,
+                                   **{f"Valid/Acc_{k}": v for k, v in per_class_acc.items()},
+                                   **{f"Valid/F1_{k}": v for k, v in per_class_f1.items()},
+                                   "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
                         pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val Masked Acc: {val_acc_masked:.4f}")
-                        
+
                         if val_acc_masked > best_acc:
                             best_acc = val_acc_masked
                             best_iteration = self.global_step
                             torch.save(self.model.state_dict(), self.save_dir/f'fold{fold}_best_model.pt')
-                            print(f"Epoch {current_epoch} with {len(self.dataset.slice_indices)} segments, Best Acc {best_acc:.4f}")
+                            print(f"Epoch {current_epoch} with {len(self.dataset.training_instances)} segments, Best Acc {best_acc:.4f}")
 
                     # Save checkpoints at specified intervals
                     if self.global_step % self.save_interval == 0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold}_{self.global_step}_iter.pt')
@@ -251,18 +294,19 @@ class FrameTrainer(Trainer):
             print(f"Fold {fold} Best Accuracy: {best_acc:.4f} at iteration {best_iteration}")
 
             self.model.load_state_dict(torch.load(self.save_dir/f'fold{fold}_best_model.pt', weights_only=True))
-            test_loss, test_acc, test_acc_masked, cm = self.evaluate(testset)
-            wandb.log({"Test/Loss": test_loss, "Test/Acc": test_acc, "Test/Masked Acc": test_acc_masked, "Test Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+            test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm = self.evaluate(testset)
+            wandb.log({"Test/Loss": test_loss, "Test/Acc": test_acc, "Test/Masked Acc": test_acc_masked,
+                       "Test/Macro F1": macro_f1,
+                       **{f"Test/Acc_{k}": v for k, v in per_class_acc.items()},
+                       **{f"Test/F1_{k}": v for k, v in per_class_f1.items()},
+                       "Test Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
             print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test Masked Acc: {test_acc_masked:.4f}")
+            print(f"Per-class Acc: { {k: f'{v:.4f}' for k, v in per_class_acc.items()} }")
             fold_best_acc[fold] = test_acc_masked
 
         if wandb.run is not None: wandb.finish()
 
         return fold_best_acc
-
-
-
-
 
 
 class SegmentTrainer(Trainer):
@@ -277,19 +321,19 @@ class SegmentTrainer(Trainer):
         loss = self.criterion(outputs, y)
         loss.backward()
         self.optimizer.step()
-        
+
         batch_outputs = outputs.detach().argmax(dim=-1)
         batch_acc, batch_acc_masked = self.get_masked_acc(batch_outputs, y, target_mask='아니리')
-        
+
         return loss.item(), batch_acc, batch_acc_masked
 
 
     def evaluate(self, dataloader):
         self.model.eval()
-        
+
         total_loss = 0
         all_outputs, all_labels = [], []
-        
+
         with torch.no_grad():
             for batch in dataloader:
                 _, x, y = batch
@@ -303,9 +347,10 @@ class SegmentTrainer(Trainer):
         all_outputs, all_labels = torch.cat(all_outputs, dim=0).argmax(dim=-1), torch.cat(all_labels, dim=0)
         valid_loss = total_loss / len(dataloader.dataset)
         valid_acc, valid_acc_masked = self.get_masked_acc(all_outputs, all_labels, target_mask='아니리')
+        per_class_f1, macro_f1 = self.get_per_class_f1(all_outputs, all_labels, ignore_label='아니리')
         cm = self.plot_confusion_matrix(all_outputs, all_labels, range(dataloader.dataset.num_classes))
 
-        return valid_loss, valid_acc, valid_acc_masked, cm
+        return valid_loss, valid_acc, valid_acc_masked, per_class_f1, macro_f1, cm
 
 
     def train(self):
@@ -323,7 +368,7 @@ class SegmentTrainer(Trainer):
             validset = self.dataset.get_split(valid_hash_keys, split='valid')
             testset = self.dataset.get_split(test_hash_keys, split='test')
             self.dataset.get_split(train_hash_keys, split='train')
-            print('Trainset:', len(self.dataset), 'Validset:', len(validset), 'Testset:', len(testset))
+            print('Trainset:', len(train_hash_keys), 'Validset:', len(valid_hash_keys), 'Testset:', len(test_hash_keys))
 
             valid_loader = DataLoader(validset, batch_size=self.batch_size, shuffle=False)
             test_loader = DataLoader(testset, batch_size=self.batch_size, shuffle=False)
@@ -335,7 +380,7 @@ class SegmentTrainer(Trainer):
             while self.global_step < self.num_iterations:
                 # Forward
                 try: _, x, y = next(train_iter)
-                except StopIteration: 
+                except StopIteration:
                     # update train iter
                     train_iter = iter(train_loader)
                     _, x, y = next(train_iter)
@@ -343,7 +388,7 @@ class SegmentTrainer(Trainer):
 
                 loss, batch_acc, batch_acc_masked = self.train_batch(x, y)
                 wandb.log({"Train/Loss": loss, "Train/ACC": batch_acc, "Train/Masked Acc": batch_acc_masked}, step=self.global_step)
-                                
+
                 self.global_step += 1
                 pbar.update(1)
                 pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Loss: {loss:.4f}, Best Acc : {best_acc:.4f}")
@@ -351,28 +396,34 @@ class SegmentTrainer(Trainer):
 
                 # Evaluate at specified intervals
                 if self.global_step % self.eval_interval == 0:
-                    val_loss, val_acc, val_acc_masked, cm = self.evaluate(valid_loader)
-                    wandb.log({"Valid/Loss": val_loss, "Valid/Acc": val_acc, "Valid/Masked Acc": val_acc_masked, "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+                    val_loss, val_acc, val_acc_masked, per_class_f1, macro_f1, cm = self.evaluate(valid_loader)
+                    wandb.log({"Valid/Loss": val_loss, "Valid/Acc": val_acc, "Valid/Masked Acc": val_acc_masked,
+                               "Valid/Macro F1": macro_f1,
+                               **{f"Valid/F1_{k}": v for k, v in per_class_f1.items()},
+                               "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
                     pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val Masked Acc: {val_acc_masked:.4f}")
-                    
+
                     if val_acc_masked > best_acc:
                         best_acc = val_acc_masked
                         best_iteration = self.global_step
                         torch.save(self.model.state_dict(), self.save_dir/f'fold{fold}_best_model.pt')
                         print(f"Epoch {current_epoch} with {len(train_loader.dataset)} segments, Best Acc {best_acc:.4f}")
-                
+
                 # Save checkpoints at specified intervals
                 if self.global_step % self.save_interval == 0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold}_{self.global_step}_iter.pt')
 
                 # Break
                 if self.global_step >= self.num_iterations: break
-            
+
             pbar.close()
             print(f"Fold {fold} Best Accuracy: {best_acc:.4f} at iteration {best_iteration}")
 
             self.model.load_state_dict(torch.load(self.save_dir/f'fold{fold}_best_model.pt', weights_only=True))
-            test_loss, test_acc, test_acc_masked, cm = self.evaluate(test_loader)
-            wandb.log({"Test/Loss": test_loss, "Test/Acc": test_acc, "Test/Masked Acc": test_acc_masked, "Test Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+            test_loss, test_acc, test_acc_masked, per_class_f1, macro_f1, cm = self.evaluate(test_loader)
+            wandb.log({"Test/Loss": test_loss, "Test/Acc": test_acc, "Test/Masked Acc": test_acc_masked,
+                       "Test/Macro F1": macro_f1,
+                       **{f"Test/F1_{k}": v for k, v in per_class_f1.items()},
+                       "Test Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
             print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test Masked Acc: {test_acc_masked:.4f}")
 
             fold_best_acc[fold] = test_acc_masked

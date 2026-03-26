@@ -4,20 +4,18 @@ import json
 import random
 import unicodedata
 from pathlib import Path
-from copy import deepcopy
+from copy import copy
 from abc import abstractmethod
 from collections import Counter
-
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
+import soundfile as sf
 import torch
 import torchaudio
 from torch.utils.data import Dataset
 from torchaudio.transforms import TimeStretch, FrequencyMasking
 from torchaudio.transforms import Spectrogram, MelScale, AmplitudeToDB
-
 
 
 class BaseDataset(Dataset):
@@ -26,18 +24,17 @@ class BaseDataset(Dataset):
         self.window = window
 
         self.num_classes = num_classes
-        self.label_map = {"창조":0, "아니리":0, "설렁제":1, "경드름":1, "우조":1, "평조":1, "계면조": 2, "Unknown":3}
-
+        self.label_map = {"Unknown": 0, "경드름": 1, "설렁제": 1, "평조": 1, "우조": 1, "계면조": 2, "아니리": 3, "창조": 4}
         self.data_dir = Path(data_dir)
 
         label_csv = os.path.join(label_dir, 'label.csv')
         self.df = pd.read_csv(label_csv) if os.path.exists(label_csv) else self.get_df(label_dir)
         self.loaded_hash = list(set(self.df['hash_key'].tolist()))
-        
+
         self.aug = aug
         self.margin_ratio = margin_ratio
         self.is_valid = is_valid
-    
+
 
     def get_df(self, label_dir):
         label_json = f'{label_dir}/label.json'
@@ -57,10 +54,10 @@ class BaseDataset(Dataset):
                 label = result['value']['labels'][0]
                 df.loc[cnt] = [hash_key, filename, duration, start, end, label]
                 cnt += 1
+
         df.to_csv(f'{label_dir}/label.csv', index=None)
 
         return df
-
 
     def get_frame_label(self):
         loaded_label = {}
@@ -83,7 +80,7 @@ class BaseDataset(Dataset):
 
     @abstractmethod
     def __len__(self): return None
-    
+
     @abstractmethod
     def __getitem__(self, idx): return None
 
@@ -93,13 +90,14 @@ class AudioDataset(BaseDataset):
     def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, margin_ratio=1.0, is_valid=False, aug=False):
         super().__init__(data_dir, label_dir, num_classes, sr, window, margin_ratio, is_valid, aug)
         self.channels = channels
-
+        
         self.pitch_shift_dir = os.path.join(os.path.dirname(data_dir), "PitchShiftedAudio")
         if self.aug and not self.is_valid and os.path.exists(self.pitch_shift_dir): self.pitch_shifted_audio = self.load_pitch_shifted_audio()
 
 
     def _load_audio(self, audio_file):
-        audio, sr = torchaudio.load(audio_file)
+        data, sr = sf.read(audio_file, dtype='float32', always_2d=True)
+        audio = torch.from_numpy(data.T)  # (channels, samples)
         audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=self.sr) if self.sr!=sr else audio
         audio = audio.mean(dim=0, keepdim=True) if self.channels=='mono' else audio
         return audio
@@ -107,7 +105,6 @@ class AudioDataset(BaseDataset):
 
     def load_pitch_shifted_audio(self):
         pitch_shifted_audio = {}
-
         if not os.path.exists(self.pitch_shift_dir):
             print(f"Warning: Pitch shift directory {self.pitch_shift_dir} not found.")
             return None
@@ -117,18 +114,18 @@ class AudioDataset(BaseDataset):
 
             parts = audio_file.split("_ps_")
             if len(parts) != 2: continue
-                
+
             original_name = parts[0]
             hash_key = unicodedata.normalize('NFC', original_name.split("-")[0])
-            
+
             if hash_key not in self.loaded_hash: continue
 
             audio = self._load_audio(os.path.join(self.pitch_shift_dir, audio_file))
             if hash_key not in pitch_shifted_audio: pitch_shifted_audio[hash_key] = []
             pitch_shifted_audio[hash_key].append(audio)
-        
+
         return pitch_shifted_audio
-    
+
 
     def apply_audio_augmentation(self, audio):
         if not self.aug or random.random() > 0.5: return audio
@@ -141,9 +138,8 @@ class AudioDataset(BaseDataset):
         if random.random() < 0.3:
             gain = random.uniform(0.7, 1.3)
             audio = audio * gain
-            
         return audio
-    
+
 
     @abstractmethod
     def get_data(self): return None
@@ -153,7 +149,7 @@ class AudioDataset(BaseDataset):
 
     @abstractmethod
     def __len__(self): return None
-    
+
     @abstractmethod
     def __getitem__(self, idx): return None
 
@@ -165,92 +161,114 @@ class AudioFrameDataset(AudioDataset):
         self.loaded_data = self.get_data()
         self.loaded_label = self.get_frame_label()
 
-        self.slice_indices = []
-        self.prepare_slice_indices()
+        self.training_instances = []
+        self.val_segments = []
+        self.prepare_training_instances()
 
 
     def get_data(self):
         loaded_data = {}
-        for audio_file in tqdm(list(self.data_dir.rglob('*.wav')), desc='Load Audio'):
+        for audio_file in tqdm(list(self.data_dir.rglob('*.wav')), desc='Index Audio'):
             hash_key = unicodedata.normalize('NFC', audio_file.name.split("-")[0])
             if hash_key not in self.loaded_hash: continue
+            loaded_data[hash_key] = audio_file  # store path only, load on-demand
 
-            audio = self._load_audio(audio_file)
-            loaded_data[hash_key] = audio
-        
         return loaded_data
 
 
-    def prepare_slice_indices(self, target_hash_keys=None, random_offset=True):
-        self.slice_indices = []
+    def prepare_training_instances(self, target_hash_keys=None):
+        self.training_instances = []
         window_samples = self.window * self.sr
-        
-        for hash_key in self.loaded_hash:
-            if hash_key not in self.loaded_data.keys():
+
+        for hash_key in list(self.loaded_hash):
+            if hash_key not in self.loaded_data:
                 self.loaded_hash.remove(hash_key)
                 continue
+            if target_hash_keys is not None and hash_key not in target_hash_keys:
+                continue
 
-            if target_hash_keys is not None and hash_key not in target_hash_keys: continue
+            duration_ms = self.df[self.df['hash_key'] == hash_key]['duration'].values[0]
+            audio_length = int(duration_ms * self.sr / 1000)
+            num_repeats = max(1, audio_length // window_samples)
+            self.training_instances.extend([hash_key] * num_repeats)
 
-            audio = self.loaded_data[hash_key]
-            audio_length = audio.shape[1]
-            
-            if audio_length < window_samples: continue
-            offset = random.randint(0, min(window_samples, audio_length - window_samples)) if random_offset else 0
-            
-            current_pos = offset
-            while current_pos + window_samples <= audio_length:
-                self.slice_indices.append((hash_key, current_pos, current_pos + window_samples))
-                current_pos += window_samples
+    def update_training_instances(self, target_hash_keys):
+        self.prepare_training_instances(target_hash_keys)
 
-            if current_pos < audio_length and audio_length - window_samples >= 0:
-                final_start = audio_length - window_samples
-                self.slice_indices.append((hash_key, final_start, audio_length))
-
-    def update_slice_indices(self, target_hash_keys):
-        self.prepare_slice_indices(target_hash_keys, random_offset=True)
+    def prepare_val_segments(self, target_hash_keys):
+        val_segments = []
+        window_samples = self.window * self.sr
+        for hash_key in target_hash_keys:
+            if hash_key not in self.loaded_data:
+                continue
+            duration_ms = self.df[self.df['hash_key'] == hash_key]['duration'].values[0]
+            audio_length = int(duration_ms * self.sr / 1000)
+            for start in range(0, audio_length, window_samples):
+                val_segments.append((hash_key, start, min(start + window_samples, audio_length)))
+        return val_segments
 
     def compose_validset(self, target_hash_keys):
-        validset = deepcopy(self)
+        validset = copy(self)  # shallow copy — shares loaded_data/label references, no duplication
         validset.is_valid = True
-        validset.loaded_hash = target_hash_keys
-        validset.loaded_data = {hash_key:self.loaded_data[hash_key] for hash_key in target_hash_keys}
-        validset.loaded_label = {hash_key:self.loaded_label[hash_key] for hash_key in target_hash_keys}
+        validset.loaded_hash = [k for k in target_hash_keys if k in self.loaded_data]
+        validset.loaded_data = {k: self.loaded_data[k] for k in validset.loaded_hash}
+        validset.loaded_label = {k: self.loaded_label[k] for k in validset.loaded_hash}
+        validset.val_segments = self.prepare_val_segments(validset.loaded_hash)
         return validset
 
 
     def get_split(self, target_hash_keys, split='train'):
         if split == 'train':
-            self.update_slice_indices(target_hash_keys)
+            self.update_training_instances(target_hash_keys)
         else:
             return self.compose_validset(target_hash_keys)
 
 
     def __len__(self):
-        if self.is_valid: return len(self.loaded_hash)
-        return len(self.slice_indices)
-    
+        if self.is_valid: return len(self.val_segments)
+        return len(self.training_instances)
+
 
     def __getitem__(self, idx):
+        window_samples = self.window * self.sr
+
         if self.is_valid:
-            hash_key = self.loaded_hash[idx]
-            audio, label = self.loaded_data[hash_key], self.loaded_label[hash_key]
-            return hash_key, audio, label
-        
-        hash_key, start, end = self.slice_indices[idx]
+            hash_key, start, end = self.val_segments[idx]
+            audio = self._load_audio(self.loaded_data[hash_key])
+            audio_slice = audio[:, start:end]
+            if audio_slice.shape[1] < window_samples:
+                pad = window_samples - audio_slice.shape[1]
+                audio_slice = torch.nn.functional.pad(audio_slice, (0, pad))
+            start_ms, end_ms = int(start / self.sr * 1000), int(end / self.sr * 1000)
+            label = self.loaded_label[hash_key][start_ms:end_ms]
+            return hash_key, audio_slice, label
 
-        if self.aug and hash_key in self.pitch_shifted_audio and random.random() < 0.5: audio = random.choice(self.pitch_shifted_audio[hash_key])
-        else: audio = self.loaded_data[hash_key]
+        hash_key = self.training_instances[idx]
 
-        margin_length = int(self.margin_ratio * (end-start))
-        if start - margin_length//2 < 0: end = start + margin_length
-        elif end + margin_length//2 > audio.shape[1]:
-            end = audio.shape[1]
-            start = end - margin_length
-        else: start, end = (start - margin_length//2), (end + margin_length//2)
+        if self.aug and hasattr(self, 'pitch_shifted_audio') and hash_key in self.pitch_shifted_audio and random.random() < 0.5:
+            audio = random.choice(self.pitch_shifted_audio[hash_key])
+        else:
+            audio = self._load_audio(self.loaded_data[hash_key])
+
+        audio_length = audio.shape[1]
+        if audio_length > window_samples:
+            start = random.randint(0, audio_length - window_samples)
+        else:
+            start = 0
+        end = start + window_samples
+
+        margin_length = int(self.margin_ratio * window_samples)
+        if start - margin_length // 2 < 0:
+            end = margin_length
+            start = 0
+        elif end + margin_length // 2 > audio_length:
+            end = audio_length
+            start = max(0, audio_length - margin_length)
+        else:
+            start, end = start - margin_length // 2, end + margin_length // 2
         audio = audio[:, start:end]
 
-        start_ms, end_ms = int(start/self.sr*1000), int(end/self.sr*1000)
+        start_ms, end_ms = int(start / self.sr * 1000), int(end / self.sr * 1000)
         label = self.loaded_label[hash_key][start_ms:end_ms]
 
         if self.aug: audio = self.apply_audio_augmentation(audio)
@@ -267,21 +285,18 @@ class AudioSegmentDataset(AudioDataset):
 
     def get_data(self):
         loaded_data, loaded_label, loaded_meta = [], [], []
-        for audio_file in tqdm(list(Path(self.data_dir).glob('*.wav')), desc="Load Audio Segment & Label"):
+        for audio_file in tqdm(list(Path(self.data_dir).glob('*.wav')), desc="Index Audio Segments"):
             hash_key = unicodedata.normalize('NFC', audio_file.name.split("-")[0])
             if hash_key not in self.loaded_hash: continue
 
-            audio = self._load_audio(audio_file)
             hash_df = self.df[self.df['hash_key']==hash_key]
             segment_meta = hash_df[['start', 'end','label']].to_numpy()
 
             for start_ms, end_ms, label in segment_meta:
                 start, end = int(start_ms * self.sr /1000), int(end_ms * self.sr /1000)
-
-                segment = audio[:, start:end]
                 label = self.label_map[label]
 
-                loaded_data.append(segment)
+                loaded_data.append(audio_file)  # store path only
                 loaded_label.append(label)
                 loaded_meta.append((hash_key, start, end))
 
@@ -319,7 +334,7 @@ class AudioSegmentDataset(AudioDataset):
                 loaded_data.append(segment)
                 loaded_label.append(label)
                 loaded_meta.append((hash_key, start, end))
-            
+
         return loaded_data, loaded_label, loaded_meta
 
 
@@ -330,7 +345,7 @@ class AudioSegmentDataset(AudioDataset):
             self.loaded_label = [self.loaded_all[1][idx] for idx in target_indices]
             self.loaded_meta = [self.loaded_all[2][idx] for idx in target_indices]
         else:
-            validset = deepcopy(self)
+            validset = copy(self)  # shallow copy — no data duplication
             validset.is_valid = True
             validset.loaded_data, validset.loaded_label, validset.loaded_meta = self.compose_validset(target_hash_keys)
             return validset
@@ -338,18 +353,20 @@ class AudioSegmentDataset(AudioDataset):
 
     def __len__(self):
         return len(self.loaded_data)
-    
+
 
     def __getitem__(self, idx):
-        if self.is_valid:
-            audio, label = self.loaded_data[idx], self.loaded_label[idx]
-            hash_key, _, _ = self.loaded_meta[idx]
-            return hash_key, audio, label
-
-        audio, label = self.loaded_data[idx], self.loaded_label[idx]
+        audio_path, label = self.loaded_data[idx], self.loaded_label[idx]
         hash_key, start, end = self.loaded_meta[idx]
 
-        if self.aug and not self.is_valid and random.random() < 0.5:  audio = random.choice(self.pitch_shifted_audio[hash_key])[:,start:end]
+        full_audio = self._load_audio(audio_path)
+        if self.aug and not self.is_valid and hash_key in self.pitch_shifted_audio and random.random() < 0.5:
+            full_audio = random.choice(self.pitch_shifted_audio[hash_key])
+        audio = full_audio[:, start:end]
+
+        if self.is_valid:
+            return hash_key, audio, label
+
         if self.aug and not self.is_valid: audio = self.apply_audio_augmentation(audio)
 
         audio_len, window_len = audio.shape[-1], self.window * self.sr
@@ -378,20 +395,20 @@ class MelDataset():
         self.spec_cvt = Spectrogram(n_fft=n_fft, hop_length=hop_length, power=1.0)
         self.spec2mel = MelScale(n_stft=n_fft//2+1, n_mels=target_bins, sample_rate=sr, f_min=80, f_max=2000)
         self.db_cvt = AmplitudeToDB()
-        
+
         if self.aug:
             self.time_stretch = TimeStretch(hop_length=hop_length, n_freq=n_fft//2+1)
             self.freq_mask = FrequencyMasking(freq_mask_param=10)
-    
+
 
     def get_mel(self, audio):
         spec = self.spec_cvt(audio)
         if self.aug and not self.is_valid: spec, stretch_factor = self.apply_spec_time_stretch(spec)
         else: stretch_factor = 1.0
-        
+
         mel = self.spec2mel(spec).squeeze(0)
         mel = self.db_cvt(mel) / 100
-            
+
         return mel, stretch_factor
 
 
@@ -402,7 +419,7 @@ class MelDataset():
             if not torch.is_complex(spec): spec = torch.complex(spec, torch.zeros_like(spec))
             spec = self.time_stretch(spec, stretch_factor)
             spec = spec.abs()
-        
+
         return spec, stretch_factor
 
 
@@ -417,7 +434,7 @@ class MelDataset():
                 shift_steps = abs(shift_steps)
                 spec_shifted[..., -shift_steps:, :] = 0
             return spec_shifted
-        
+
         return spec
 
 
@@ -425,20 +442,20 @@ class MelDataset():
         """Apply spectrogram augmentations"""
         if not self.aug or random.random() > 0.8: return mel
         if random.random() < 0.5: mel = self.apply_spec_pitch_shift(mel)
-        if random.random() < 0.5: mel = self.freq_mask(mel)            
+        if random.random() < 0.5: mel = self.freq_mask(mel)
         return mel
 
 
     def apply_time_stretch(self, label, stretch_factor):
         if stretch_factor == 1.0: return label
         orig_length = label.shape[0]
-        new_length = int(orig_length / stretch_factor)        
+        new_length = int(orig_length / stretch_factor)
         stretched_label = torch.zeros((new_length, label.shape[1]))
-        
+
         if new_length > 0:
             orig_indices = torch.linspace(0, orig_length - 1, new_length).long()
             stretched_label[:new_length] = label[orig_indices]
-            
+
         return stretched_label
 
 
@@ -446,21 +463,21 @@ class MelDataset():
         ms_per_frame = self.hop_length / self.sr * 1000
         num_frames = int(ms_label.shape[0] / ms_per_frame)
         frame_label = torch.zeros((num_frames, self.num_classes))
-        
+
         for frame_idx in range(num_frames):
             frame_start_ms = int(frame_idx * ms_per_frame)
             frame_end_ms = int((frame_idx + 1) * ms_per_frame)
-            
+
             if frame_start_ms >= ms_label.shape[0]: frame_label[frame_idx, 0] = 1
             else:
                 frame_end_ms = min(frame_end_ms, ms_label.shape[0])
                 ms_segment = ms_label[frame_start_ms:frame_end_ms]
-                
+
                 if ms_segment.shape[0] > 0:
                     class_sums = ms_segment.sum(dim=0)
                     frame_label[frame_idx] = (class_sums == class_sums.max()).float()
                 else: frame_label[frame_idx, 0] = 1
-                    
+
         return frame_label
 
 
@@ -472,7 +489,7 @@ class MelFrameDataset(AudioFrameDataset, MelDataset):
 
     def __len__(self):
         return super().__len__()
-    
+
     def __getitem__(self, idx):
         if self.is_valid:
             hash_key, audio, label = super().__getitem__(idx)
@@ -484,11 +501,11 @@ class MelFrameDataset(AudioFrameDataset, MelDataset):
         else:
             hash_key, audio, label = super().__getitem__(idx)
             mel, stretch_factor = self.get_mel(audio)
-            
+
             start_idx = (mel.shape[1] - self.window_frame) // 2
             mel = mel[:,start_idx:start_idx+self.window_frame]
             if self.aug: mel = self.apply_spec_augmentation(mel)
-            
+
             label = self.apply_time_stretch(label, stretch_factor)
             frame_label = self.ms_to_frame_label(label)
             frame_label = frame_label[start_idx:start_idx+self.window_frame]
@@ -504,7 +521,7 @@ class MelSegmentDataset(AudioSegmentDataset, MelDataset):
 
     def __len__(self):
         return super().__len__()
-    
+
 
     def __getitem__(self, idx):
         hash_key, audio, label = super().__getitem__(idx)
@@ -570,10 +587,9 @@ class PitchDataset(BaseDataset):
 
     @abstractmethod
     def __len__(self): return None
-    
+
     @abstractmethod
     def __getitem__(self, idx): return None
-
 
 
 class PitchFrameDataset(PitchDataset):
@@ -586,8 +602,9 @@ class PitchFrameDataset(PitchDataset):
         for hash_key in set(self.loaded_label.keys()) - set(self.loaded_data.keys()): self.loaded_hash.remove(hash_key)
         self.loaded_label = {key:self.ms_to_frame_label(val) for key, val in self.loaded_label.items()}
 
-        self.slice_indices = []
-        self.prepare_slice_indices()
+        self.training_instances = []
+        self.val_segments = []
+        self.prepare_training_instances()
 
 
     def get_data(self):
@@ -603,45 +620,48 @@ class PitchFrameDataset(PitchDataset):
         return loaded_data
 
 
-    def prepare_slice_indices(self, target_hash_keys=None, random_offset=True):
-        self.slice_indices = []
-        window_samples = self.window * self.frame_rate
+    def prepare_training_instances(self, target_hash_keys=None):
+        self.training_instances = []
+        window_frames = self.window * self.frame_rate
 
-        for hash_key in self.loaded_hash:
+        for hash_key in list(self.loaded_hash):
+            if hash_key not in self.loaded_data:
+                self.loaded_hash.remove(hash_key)
+                continue
+            if target_hash_keys is not None and hash_key not in target_hash_keys:
+                continue
 
-            if target_hash_keys is not None and hash_key not in target_hash_keys: continue
+            contour_length = self.loaded_data[hash_key].shape[1]
+            num_repeats = max(1, contour_length // window_frames)
+            self.training_instances.extend([hash_key] * num_repeats)
 
-            contour = self.loaded_data[hash_key]
-            contour_length = contour.shape[1]
-            
-            if contour_length < window_samples: continue
-            offset = random.randint(0, min(window_samples, contour_length - window_samples)) if random_offset else 0
-            
-            current_pos = offset
-            while current_pos + window_samples <= contour_length:
-                self.slice_indices.append((hash_key, current_pos, current_pos + window_samples))
-                current_pos += window_samples
+    def update_training_instances(self, target_hash_keys):
+        self.prepare_training_instances(target_hash_keys)
 
-            if current_pos < contour_length and contour_length - window_samples >= 0:
-                final_start = contour_length - window_samples
-                self.slice_indices.append((hash_key, final_start, contour_length))
-
-    def update_slice_indices(self, target_hash_keys):
-        self.prepare_slice_indices(target_hash_keys, random_offset=True)
-
+    def prepare_val_segments(self, target_hash_keys):
+        val_segments = []
+        window_frames = self.window * self.frame_rate
+        for hash_key in target_hash_keys:
+            if hash_key not in self.loaded_data:
+                continue
+            contour_length = self.loaded_data[hash_key].shape[1]
+            for start in range(0, contour_length, window_frames):
+                val_segments.append((hash_key, start, min(start + window_frames, contour_length)))
+        return val_segments
 
     def compose_validset(self, target_hash_keys):
-        validset = deepcopy(self)
+        validset = copy(self)
         validset.is_valid = True
-        validset.loaded_hash = [hash_key for hash_key in target_hash_keys if hash_key in self.loaded_hash]
-        validset.loaded_data = {hash_key:self.loaded_data[hash_key] for hash_key in target_hash_keys if hash_key in self.loaded_hash}
-        validset.loaded_label = {hash_key:self.loaded_label[hash_key] for hash_key in target_hash_keys if hash_key in self.loaded_hash}
+        validset.loaded_hash = [k for k in target_hash_keys if k in self.loaded_data]
+        validset.loaded_data = {k: self.loaded_data[k] for k in validset.loaded_hash}
+        validset.loaded_label = {k: self.loaded_label[k] for k in validset.loaded_hash}
+        validset.val_segments = self.prepare_val_segments(validset.loaded_hash)
         return validset
 
 
     def get_split(self, target_hash_keys, split='train'):
         if split == 'train':
-            self.update_slice_indices(target_hash_keys)
+            self.update_training_instances(target_hash_keys)
         else:
             return self.compose_validset(target_hash_keys)
 
@@ -654,12 +674,12 @@ class PitchFrameDataset(PitchDataset):
         for frame_idx in range(num_frames):
             frame_start_ms = int(frame_idx * ms_per_frame)
             frame_end_ms = int((frame_idx + 1) * ms_per_frame)
-            
+
             if frame_start_ms >= ms_label.shape[0]: frame_label[frame_idx, 0] = 1
             else:
                 frame_end_ms = min(frame_end_ms, ms_label.shape[0])
                 ms_segment = ms_label[frame_start_ms:frame_end_ms]
-                
+
                 if ms_segment.shape[0] > 0:
                     class_sums = ms_segment.sum(dim=0)
                     frame_label[frame_idx] = (class_sums == class_sums.max()).float()
@@ -670,39 +690,54 @@ class PitchFrameDataset(PitchDataset):
 
 
     def __len__(self):
-        if self.is_valid: return len(self.loaded_hash)
-        return len(self.slice_indices)
+        if self.is_valid: return len(self.val_segments)
+        return len(self.training_instances)
 
 
     def __getitem__(self, idx):
+        window_frames = self.window * self.frame_rate
+
         if self.is_valid:
-            hash_key = self.loaded_hash[idx]
+            hash_key, start, end = self.val_segments[idx]
             contour, label = self.loaded_data[hash_key], self.loaded_label[hash_key]
+            contour_slice = contour[:, start:end]
+            label_slice = label[start:end]
+            if contour_slice.shape[1] < window_frames:
+                pad = window_frames - contour_slice.shape[1]
+                contour_slice = torch.nn.functional.pad(contour_slice, (0, pad))
+                pad_label = torch.zeros((pad, label_slice.shape[1]))
+                pad_label[:, 0] = 1
+                label_slice = torch.cat([label_slice, pad_label], dim=0)
+            return hash_key, contour_slice, label_slice
 
-            if contour.shape[1] > label.shape[0]: contour = contour[:,:label.shape[0]]
-            elif contour.shape[1] < label.shape[0]: label = label[:contour.shape[1]]
-
-            return hash_key, contour, label
-
-        hash_key, start, end = self.slice_indices[idx]
+        hash_key = self.training_instances[idx]
         contour, label = self.loaded_data[hash_key], self.loaded_label[hash_key]
-        if contour.shape[1] > label.shape[0]: contour = contour[:,:label.shape[0]]
+        if contour.shape[1] > label.shape[0]: contour = contour[:, :label.shape[0]]
         elif contour.shape[1] < label.shape[0]: label = label[:contour.shape[1]]
 
-        margin_length = int(self.margin_ratio * (end - start))
-        if start - margin_length//2 < 0: end = start + margin_length
-        elif end + margin_length//2 > contour.shape[1]:
-            end = contour.shape[1]
-            start = end - margin_length
+        contour_length = contour.shape[1]
+        if contour_length > window_frames:
+            start = random.randint(0, contour_length - window_frames)
         else:
-            start, end = (start - margin_length//2), (end + margin_length//2)
+            start = 0
+        end = start + window_frames
+
+        margin_length = int(self.margin_ratio * window_frames)
+        if start - margin_length // 2 < 0:
+            end = margin_length
+            start = 0
+        elif end + margin_length // 2 > contour_length:
+            end = contour_length
+            start = max(0, contour_length - margin_length)
+        else:
+            start, end = start - margin_length // 2, end + margin_length // 2
 
         contour = contour[:, start:end]
         label = label[start:end]
 
-        start_idx = (contour.shape[1] - self.window_frame) // 2
-        contour = contour[:, start_idx:start_idx+self.window_frame]
-        label = label[start_idx:start_idx+self.window_frame]
+        start_idx = (contour.shape[1] - window_frames) // 2
+        contour = contour[:, start_idx:start_idx + window_frames]
+        label = label[start_idx:start_idx + window_frames]
 
         if self.aug and random.random() < 0.5:
             contour = self.shift_contour(contour)
@@ -710,7 +745,6 @@ class PitchFrameDataset(PitchDataset):
         assert label.shape[0] == contour.shape[1], f"label.shape[0] != contour.shape[1]: {label.shape[0]} != {contour.shape[1]}"
 
         return hash_key, contour, label
-
 
 
 class PitchSegmentDataset(PitchDataset):
@@ -780,7 +814,7 @@ class PitchSegmentDataset(PitchDataset):
                 loaded_data.append(segment)
                 loaded_label.append(label)
                 loaded_meta.append((hash_key, start, end))
-            
+
         return loaded_data, loaded_label, loaded_meta
 
 
@@ -791,7 +825,7 @@ class PitchSegmentDataset(PitchDataset):
             self.loaded_label = [self.loaded_all[1][idx] for idx in target_indices]
             self.loaded_meta = [self.loaded_all[2][idx] for idx in target_indices]
         else:
-            validset = deepcopy(self)
+            validset = copy(self)  # shallow copy — no data duplication
             validset.is_valid = True
             validset.loaded_data, validset.loaded_label, validset.loaded_meta = self.compose_validset(target_hash_keys)
             return validset

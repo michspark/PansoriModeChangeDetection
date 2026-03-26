@@ -4,20 +4,20 @@ hydra:
 
 # Data sources
 data:
-  data_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/SeparatedAudio"
-  label_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Label"
+  data_dir: "/home/sangheon/Desktop/Pansori_Data/Audio"
+  label_dir: "/home/sangheon/Desktop/PansoriModeChangeDetection/data/Label"
 
 # Dataset configuration
 dataset:
   name: "MelFrameDataset"
   params:
-    num_classes: 4
+    num_classes: 5
     sr: 16000
     channels: 'mono'
-    window: 20
+    window: 30
     n_fft: 2048
     hop_length: 512
-    target_bins: 80
+    target_bins: 40
     aug: True
 
 # Model
@@ -28,7 +28,7 @@ model:
     in_channels: 1
     num_bins: ${dataset.params.target_bins}
 
-    last_hidden_dim: 128
+    last_hidden_dim: 64
     use_gradual_size: False
 
     kernel_size: 3
@@ -36,10 +36,10 @@ model:
     dilation: (1,2)
     cnn_dropout: 0
 
-    num_gru: 3
-    hidden_dim: 128
+    num_gru: 1
+    hidden_dim: 64
     dropout: 0.3
-    num_classes: 4
+    num_classes: 5
 
 # Loss params
 loss:
@@ -47,26 +47,26 @@ loss:
   params:
     alpha: 1
     gamma: 0.0
-    ignore_index: 3
+    ignore_index: 0
 
 # Training parameters
 train:
   trainer: "FrameTrainer"
   lr: 5e-4
-  batch_size: 32
+  batch_size: 8
   num_iterations: 5000
   eval_interval: 200
   save_interval: 1000
   random_seed: 42
-  selection: Stratify
+  selection: KFold
 
 # Cross-validation parameters
 kfold:
-  n_splits: 5
+  n_splits: 10
   shuffle: True
   random_state: ${train.random_seed}
 
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify_back.csv"
+stratify: "/home/sangheon/Desktop/PansoriModeChangeDetection/data/Stratify/stratify.csv"
 
 
 # Directory paths

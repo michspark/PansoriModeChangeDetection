@@ -461,22 +461,13 @@ class MelDataset():
 
     def ms_to_frame_label(self, ms_label):
         ms_per_frame = self.hop_length / self.sr * 1000
+        frame_width = int(ms_per_frame)
         num_frames = int(ms_label.shape[0] / ms_per_frame)
-        frame_label = torch.zeros((num_frames, self.num_classes))
 
-        for frame_idx in range(num_frames):
-            frame_start_ms = int(frame_idx * ms_per_frame)
-            frame_end_ms = int((frame_idx + 1) * ms_per_frame)
-
-            if frame_start_ms >= ms_label.shape[0]: frame_label[frame_idx, 0] = 1
-            else:
-                frame_end_ms = min(frame_end_ms, ms_label.shape[0])
-                ms_segment = ms_label[frame_start_ms:frame_end_ms]
-
-                if ms_segment.shape[0] > 0:
-                    class_sums = ms_segment.sum(dim=0)
-                    frame_label[frame_idx] = (class_sums == class_sums.max()).float()
-                else: frame_label[frame_idx, 0] = 1
+        trimmed = ms_label[:num_frames * frame_width]           # (num_frames * frame_width, num_classes)
+        grouped = trimmed.view(num_frames, frame_width, -1)     # (num_frames, frame_width, num_classes)
+        class_sums = grouped.sum(dim=1)                         # (num_frames, num_classes)
+        frame_label = (class_sums == class_sums.max(dim=-1, keepdim=True).values).float()
 
         return frame_label
 
@@ -486,31 +477,111 @@ class MelFrameDataset(AudioFrameDataset, MelDataset):
     def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=40, margin_ratio=1.6, is_valid=False, aug=False):
         AudioFrameDataset.__init__(self, data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
         MelDataset.__init__(self, sr=sr, window=window, n_fft=n_fft, hop_length=hop_length, target_bins=target_bins, margin_ratio=margin_ratio, is_valid=is_valid, aug=aug)
+        self.loaded_data = self._preload_mel(self.loaded_data)
+        if self.aug and hasattr(self, 'pitch_shifted_audio') and self.pitch_shifted_audio:
+            self.pitch_shifted_mel = self._preload_pitch_shifted_mel()
+
+    def _audio_to_mel(self, audio):
+        """Compute mel spectrogram without augmentation."""
+        spec = self.spec_cvt(audio)
+        mel = self.spec2mel(spec).squeeze(0)
+        return self.db_cvt(mel) / 100
+
+    def _preload_mel(self, path_dict):
+        mel_dict = {}
+        for hash_key, audio_path in tqdm(path_dict.items(), desc='Preload Mel Spectrograms'):
+            audio = self._load_audio(audio_path)
+            mel_dict[hash_key] = self._audio_to_mel(audio)
+        return mel_dict
+
+    def _preload_pitch_shifted_mel(self):
+        mel_dict = {}
+        for hash_key, audio_list in tqdm(self.pitch_shifted_audio.items(), desc='Preload Pitch-Shifted Mel'):
+            mel_dict[hash_key] = [self._audio_to_mel(a) for a in audio_list]
+        del self.pitch_shifted_audio
+        return mel_dict
+
+    def _apply_mel_time_stretch(self, mel):
+        """Approximate time stretch via bilinear interpolation on the mel spectrogram."""
+        stretch_factor = 1.0
+        if random.random() < 0.3:
+            stretch_factor = random.uniform(0.7, 1.5)
+            new_len = int(mel.shape[1] / stretch_factor)
+            if new_len > 0:
+                mel = torch.nn.functional.interpolate(
+                    mel.unsqueeze(0).unsqueeze(0),
+                    scale_factor=(1.0, 1.0 / stretch_factor),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0).squeeze(0)
+        return mel, stretch_factor
 
     def __len__(self):
         return super().__len__()
 
     def __getitem__(self, idx):
         if self.is_valid:
-            hash_key, audio, label = super().__getitem__(idx)
-            mel, _ = self.get_mel(audio)
+            hash_key, start_sample, end_sample = self.val_segments[idx]
+            mel_full = self.loaded_data[hash_key]
+            start_frame = start_sample // self.hop_length
+            end_frame = end_sample // self.hop_length
+            mel = mel_full[:, start_frame:end_frame]
+            if mel.shape[-1] < self.window_frame:
+                mel = torch.nn.functional.pad(mel, (0, self.window_frame - mel.shape[-1]))
+            start_ms = int(start_sample / self.sr * 1000)
+            end_ms = int(end_sample / self.sr * 1000)
+            label = self.loaded_label[hash_key][start_ms:end_ms]
             frame_label = self.ms_to_frame_label(label)
-            if mel.shape[-1] != frame_label.shape[0]: mel = mel[:,:frame_label.shape[0]]
+            if mel.shape[-1] != frame_label.shape[0]: mel = mel[:, :frame_label.shape[0]]
             return hash_key, mel, frame_label
 
+        hash_key = self.training_instances[idx]
+
+        if self.aug and hasattr(self, 'pitch_shifted_mel') and hash_key in self.pitch_shifted_mel and random.random() < 0.5:
+            mel_full = random.choice(self.pitch_shifted_mel[hash_key])
         else:
-            hash_key, audio, label = super().__getitem__(idx)
-            mel, stretch_factor = self.get_mel(audio)
+            mel_full = self.loaded_data[hash_key]
 
-            start_idx = (mel.shape[1] - self.window_frame) // 2
-            mel = mel[:,start_idx:start_idx+self.window_frame]
-            if self.aug: mel = self.apply_spec_augmentation(mel)
+        total_frames = mel_full.shape[1]
+        window_frames = self.window_frame
+        margin_frames = int(self.margin_ratio * window_frames)
 
-            label = self.apply_time_stretch(label, stretch_factor)
-            frame_label = self.ms_to_frame_label(label)
-            frame_label = frame_label[start_idx:start_idx+self.window_frame]
-            assert frame_label.shape[0] == mel.shape[1], f"frame_label.shape[0] != mel.shape[1]: {frame_label.shape[0]} != {mel.shape[1]}, time stretch factor: {stretch_factor}, audio length: {audio.shape[1]/self.sr} sec"
-            return hash_key, mel, frame_label
+        if total_frames > window_frames:
+            start_frame = random.randint(0, total_frames - window_frames)
+        else:
+            start_frame = 0
+        end_frame = start_frame + window_frames
+
+        if start_frame - margin_frames // 2 < 0:
+            end_frame = margin_frames
+            start_frame = 0
+        elif end_frame + margin_frames // 2 > total_frames:
+            end_frame = total_frames
+            start_frame = max(0, total_frames - margin_frames)
+        else:
+            start_frame = start_frame - margin_frames // 2
+            end_frame = end_frame + margin_frames // 2
+
+        mel = mel_full[:, start_frame:end_frame].clone()
+
+        if self.aug:
+            mel, stretch_factor = self._apply_mel_time_stretch(mel)
+        else:
+            stretch_factor = 1.0
+
+        start_ms = int(start_frame * self.hop_length / self.sr * 1000)
+        end_ms = int(end_frame * self.hop_length / self.sr * 1000)
+        label = self.loaded_label[hash_key][start_ms:end_ms]
+
+        center_start = (mel.shape[1] - window_frames) // 2
+        mel = mel[:, center_start:center_start + window_frames]
+        if self.aug: mel = self.apply_spec_augmentation(mel)
+
+        label = self.apply_time_stretch(label, stretch_factor)
+        frame_label = self.ms_to_frame_label(label)
+        frame_label = frame_label[center_start:center_start + window_frames]
+        assert frame_label.shape[0] == mel.shape[1], f"frame_label.shape[0] != mel.shape[1]: {frame_label.shape[0]} != {mel.shape[1]}, time stretch factor: {stretch_factor}"
+        return hash_key, mel, frame_label
 
 
 

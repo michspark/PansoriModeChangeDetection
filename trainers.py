@@ -34,6 +34,7 @@ class Trainer:
         self.num_iterations = config.train.num_iterations
         self.eval_interval = config.train.get('eval_interval', 200)
         self.save_interval = config.train.get('save_interval', 1000)
+        self.early_stopping_patience = config.train.get('early_stopping_patience', None)
 
         self.global_step = 0
         self.model.to(self.device)
@@ -239,6 +240,7 @@ class FrameTrainer(Trainer):
 
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0
+            patience_counter = 0
 
             # Get train-test split
             train_hash_keys, valid_hash_keys, test_hash_keys = self.split_train_valid_test(hash_keys)
@@ -246,9 +248,7 @@ class FrameTrainer(Trainer):
             validset = self.dataset.get_split(valid_hash_keys, split='valid')
             testset = self.dataset.get_split(test_hash_keys, split='test')
             print('Trainset:', len(train_hash_keys), 'Validset:', len(valid_hash_keys), 'Testset:', len(test_hash_keys))
-            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-            # train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-            # train_iter = iter(train_loader)
+            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
             # Start iter loop
             pbar = tqdm(total=self.num_iterations, desc=f"Fold {fold}")
@@ -278,8 +278,14 @@ class FrameTrainer(Trainer):
                         if val_acc_masked > best_acc:
                             best_acc = val_acc_masked
                             best_iteration = self.global_step
+                            patience_counter = 0
                             torch.save(self.model.state_dict(), self.save_dir/f'fold{fold}_best_model.pt')
                             print(f"Epoch {current_epoch} with {len(self.dataset.training_instances)} segments, Best Acc {best_acc:.4f}")
+                        else:
+                            patience_counter += 1
+                            if self.early_stopping_patience and patience_counter >= self.early_stopping_patience:
+                                print(f"Early stopping at step {self.global_step} (no improvement for {patience_counter} evals)")
+                                self.global_step = self.num_iterations  # trigger outer while-loop exit
 
                     # Save checkpoints at specified intervals
                     if self.global_step % self.save_interval == 0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold}_{self.global_step}_iter.pt')
@@ -372,7 +378,7 @@ class SegmentTrainer(Trainer):
 
             valid_loader = DataLoader(validset, batch_size=self.batch_size, shuffle=False)
             test_loader = DataLoader(testset, batch_size=self.batch_size, shuffle=False)
-            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, pin_memory=True)
             train_iter = iter(train_loader)
 
             # Start iter loop

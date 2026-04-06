@@ -59,7 +59,12 @@ train:
   save_interval: 1000
   early_stopping_patience: 10
   random_seed: 42
-  selection: KFold
+  selection: StratifyHalf   # SharedFold | KFold | Stratify | StratifyHalf | Artist | RandomSplit
+  shared_fold_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_random_fold" # shared 10-fold split files
+  stratified_fold_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_stratified_folds"
+  stratified_half_fold_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_stratified_folds_half"
+  k_folds: 10
+  target_folds: [1,2]  # e.g. [1] or [1,2,3] to run only specific folds; null = run all
 
 # Cross-validation parameters
 kfold:
@@ -69,6 +74,8 @@ kfold:
 
 stratify: "/home/sangheon/Desktop/PansoriModeChangeDetection/data/Stratify/stratify.csv"
 
+filter:
+  sigma: 5
 
 # Directory paths
 dir:

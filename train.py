@@ -69,6 +69,6 @@ def main(cfg):
     fold_best_acc = trainer.train()
     print(f"Split Average Accuracy: {sum(fold_best_acc.values())/len(fold_best_acc)}")
 
-
 if __name__ == "__main__":
     main()
+

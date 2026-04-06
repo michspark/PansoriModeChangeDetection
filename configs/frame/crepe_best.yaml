@@ -57,6 +57,7 @@ train:
   save_interval: 1000
   random_seed: 42
   selection: Stratify # Artist # KFold
+  target_folds: null  # e.g. [1] or [1,2,3] to run only specific folds; null = run all
 
 # Cross-validation parameters
 kfold:

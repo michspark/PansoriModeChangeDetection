@@ -90,7 +90,7 @@ class AudioDataset(BaseDataset):
     def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, margin_ratio=1.0, is_valid=False, aug=False):
         super().__init__(data_dir, label_dir, num_classes, sr, window, margin_ratio, is_valid, aug)
         self.channels = channels
-        
+
         self.pitch_shift_dir = os.path.join(os.path.dirname(data_dir), "PitchShiftedAudio")
         if self.aug and not self.is_valid and os.path.exists(self.pitch_shift_dir): self.pitch_shifted_audio = self.load_pitch_shifted_audio()
 
@@ -464,6 +464,12 @@ class MelDataset():
         frame_width = int(ms_per_frame)
         num_frames = int(ms_label.shape[0] / ms_per_frame)
 
+        if num_frames == 0:
+            # Segment shorter than one frame: pad to one frame and return
+            pad_len = frame_width - ms_label.shape[0]
+            ms_label = torch.nn.functional.pad(ms_label, (0, 0, 0, pad_len))
+            num_frames = 1
+
         trimmed = ms_label[:num_frames * frame_width]           # (num_frames * frame_width, num_classes)
         grouped = trimmed.view(num_frames, frame_width, -1)     # (num_frames, frame_width, num_classes)
         class_sums = grouped.sum(dim=1)                         # (num_frames, num_classes)
@@ -623,11 +629,8 @@ class PitchDataset(BaseDataset):
         self.comp_ratio = self.sr // self.frame_rate
         self.window_frame = self.window * frame_rate
 
-
     def frequency_to_midi(self, frequency):
-        # Convert frequency to MIDI note
         return 69 + 12 * math.log2(frequency / 440)
-
 
     def shift_contour(self, contour):
         shift = (random.random() * 12 - 6) / 12
@@ -635,9 +638,8 @@ class PitchDataset(BaseDataset):
 
         return contour
 
-
     def _load_norm_contour(self, csv_file):
-        contour_df = pd.read_csv(csv_file, header=None, names=['time', 'frequency', 'confidence'])
+        contour_df = pd.read_csv(csv_file)
         frequency, confidence = contour_df['frequency'].values, contour_df['confidence'].values
         midi = [self.frequency_to_midi(freq) for freq in frequency]
 

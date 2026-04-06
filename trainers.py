@@ -1,4 +1,7 @@
 import datetime
+import gc
+import os
+import re
 from pathlib import Path
 from copy import deepcopy
 import numpy as np
@@ -8,6 +11,8 @@ import seaborn as sns
 from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.patches import Patch
 from sklearn.metrics import confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 import torch
@@ -15,8 +20,51 @@ from torch.utils.data import DataLoader
 import wandb
 from tqdm import tqdm
 from omegaconf import OmegaConf
+from scipy.ndimage import gaussian_filter1d
 
 T = datetime.datetime.now().strftime("%m%d_%H%M")
+
+
+def plot_posteriorgram(song_name, gt, pred_probs, class_names):
+    """
+    gt         : (T, C) numpy array, one-hot ground truth
+    pred_probs : (T, C) numpy array, softmax probabilities
+    class_names: list of class name strings (length C)
+    Returns a matplotlib Figure.
+    """
+    _CMAP = plt.cm.get_cmap('tab10')
+    n = len(class_names)
+    _CLASS_COLORS = [_CMAP(i) for i in range(n)]
+
+    T_len = gt.shape[0]
+    gt_labels = np.argmax(gt, axis=1)
+
+    fig, axes = plt.subplots(2, 1, figsize=(16, 5), sharex=True, constrained_layout=True)
+    fig.suptitle(song_name, fontsize=10)
+
+    gt_cmap = mcolors.ListedColormap([_CLASS_COLORS[i] for i in range(n)])
+    axes[0].imshow(gt_labels[np.newaxis, :], aspect='auto', origin='lower',
+                   cmap=gt_cmap, vmin=-0.5, vmax=n - 0.5, interpolation='nearest',
+                   extent=[0, T_len, -0.5, 0.5])
+    axes[0].set_yticks([0])
+    axes[0].set_yticklabels(['class'])
+    axes[0].set_title('Ground Truth')
+
+    legend_handles = [Patch(color=_CLASS_COLORS[i], label=class_names[i]) for i in range(n)]
+    axes[0].legend(handles=legend_handles, loc='upper right', fontsize=8, framealpha=0.7)
+
+    im = axes[1].imshow(np.flipud(pred_probs.T), aspect='auto', origin='lower',
+                        vmin=0, vmax=1, cmap='gray_r', interpolation='nearest',
+                        extent=[0, T_len, -0.5, n - 0.5])
+    axes[1].set_yticks(list(range(n)))
+    axes[1].set_yticklabels(class_names[::-1])
+    axes[1].set_title('Predicted Posteriorgram')
+
+    axes[-1].set_xlabel('Frame')
+    fig.colorbar(im, ax=axes[1], label='Probability', shrink=0.8)
+
+    return fig
+
 
 class Trainer:
     def __init__(self, model, optimizer, dataset, criterion, device, save_dir, config):
@@ -37,6 +85,7 @@ class Trainer:
         self.early_stopping_patience = config.train.get('early_stopping_patience', None)
 
         self.global_step = 0
+        self.fold_names = None
         self.model.to(self.device)
 
 
@@ -78,17 +127,53 @@ class Trainer:
                 test_hash_keys = [self.dataset.loaded_hash[i] for i in test_idx]
                 selection.append([train_hash_keys, test_hash_keys])
 
-        elif self.config.train.selection == 'Stratify': # Madang
-            hash_dict = {}
-            df = pd.read_csv(self.config.stratify)
-            for back in set(df['back']): hash_dict[back] = df[df['back']==back]['hash_key'].tolist()
-            hash_dict = dict(sorted(hash_dict.items()))
+        elif self.config.train.selection == 'Stratify':
+            fold_dir = Path(self.config.train.stratified_fold_dir)
+            fold_files = sorted(fold_dir.glob('*.txt'))
 
+            chunks = []
+            self.fold_names = [f.stem for f in fold_files]
+            for fold_file in fold_files:
+                lines = [l.strip() for l in fold_file.read_text(encoding='utf-8').splitlines() if l.strip()]
+                hash_keys = [line.split('-')[0] for line in lines]
+                hash_keys = [hk for hk in hash_keys if hk in self.dataset.loaded_hash]
+                chunks.append(hash_keys)
+                print(f"  {fold_file.name}: {len(hash_keys)} in dataset")
+
+            k = len(chunks)
             selection = []
-            for back, test_hash_keys in hash_dict.items():
-                print(back)
-                train_hash_keys = list(set(self.dataset.loaded_hash)-set(test_hash_keys))
-                selection.append([train_hash_keys, test_hash_keys])
+            for i in range(k):
+                val_i = (i + 1) % k
+                train_keys = [hk for j, chunk in enumerate(chunks) if j != i and j != val_i for hk in chunk]
+                selection.append([train_keys, chunks[val_i], chunks[i]])
+
+        elif self.config.train.selection == 'StratifyHalf':
+            fold_dir = Path(self.config.train.stratified_half_fold_dir)
+            fold_files = sorted(fold_dir.glob('*.txt'))
+
+            from collections import defaultdict
+            halves = defaultdict(dict)
+            self.fold_names = []
+            for fold_file in fold_files:
+                m = re.match(r'^(.+)_([12])$', fold_file.stem)
+                if not m:
+                    continue
+                base, idx = m.group(1), int(m.group(2))
+                lines = [l.strip() for l in fold_file.read_text(encoding='utf-8').splitlines() if l.strip()]
+                hash_keys = [line.split('-')[0] for line in lines]
+                hash_keys = [hk for hk in hash_keys if hk in self.dataset.loaded_hash]
+                halves[base][idx] = hash_keys
+                print(f"  {fold_file.name}: {len(hash_keys)} in dataset")
+
+            genres = sorted(halves.keys())
+            self.fold_names = [f"{g}_{v}v{t}t" for g in genres for v, t in [(1, 2), (2, 1)]]
+            selection = []
+            for held_out in genres:
+                train_keys = [hk for g in genres if g != held_out for hk in halves[g][1] + halves[g][2]]
+                for val_idx, test_idx in [(1, 2), (2, 1)]:
+                    val_keys  = halves[held_out][val_idx]
+                    test_keys = halves[held_out][test_idx]
+                    selection.append([train_keys, val_keys, test_keys])
 
         elif self.config.train.selection == 'Artist':
             selection = []
@@ -111,20 +196,57 @@ class Trainer:
             train_keys, val_keys = train_test_split(train_val_keys, test_size=1/9, random_state=self.config.train.random_seed, shuffle=True)
             selection = [[train_keys, val_keys, test_keys]]
 
-        else: Exception("Have to select config.train.selection: [KFold, Stratify, RandomSplit]")
+        elif self.config.train.selection == 'SharedFold':
+            fold_dir = Path(self.config.train.shared_fold_dir)
+            data_dir = Path(self.config.data.data_dir)
+            k = self.config.train.get('k_folds', 10)
+
+            # Build normalized_key -> hash_key mapping from audio filenames
+            def _audio_key(fname):
+                n = fname.replace('_vocal.wav', '').replace('_vocal.mid', '').replace('_vocal.f0.csv', '')
+                n = re.sub(r'^[0-9a-f]+-\d+-', '', n)
+                return n
+
+            key_to_hash = {}
+            for fname in os.listdir(data_dir):
+                if fname.endswith('.wav') or fname.endswith('.mid') or fname.endswith('.csv'):
+                    hk = fname.split('-')[0]
+                    nk = _audio_key(fname)
+                    key_to_hash[nk] = hk
+
+            # Load fold chunks: normalized_key -> hash_key
+            chunks = []
+            for i in range(1, k + 1):
+                fold_file = fold_dir / f'fold_{i:02d}.txt'
+                norm_keys = [line.strip() for line in fold_file.read_text(encoding='utf-8').splitlines() if line.strip()]
+                hash_keys = [key_to_hash[nk] for nk in norm_keys if nk in key_to_hash]
+                # Keep only those present in the dataset
+                hash_keys = [hk for hk in hash_keys if hk in self.dataset.loaded_hash]
+                chunks.append(hash_keys)
+                print(f"  Fold {i:2d}: {len(norm_keys)} keys -> {len(hash_keys)} in dataset")
+
+            # Build train/val/test selections (rolling window: test=i, val=i+1)
+            selection = []
+            for i in range(k):
+                val_i = (i + 1) % k
+                train_keys = [hk for j in range(k) if j != i and j != val_i for hk in chunks[j]]
+                selection.append([train_keys, chunks[val_i], chunks[i]])
+
+        else: Exception("Have to select config.train.selection: [KFold, Stratify, RandomSplit, SharedFold]")
 
         return selection
 
 
-    def init_new_fold(self, fold):
+    def init_new_fold(self, fold, fold_name=None):
         if wandb.run is not None: wandb.finish()
-        run_name = f"{self.config.data.data_dir.split('/')[-1]}_{self.config.model.name}_{self.config.dataset.name}_Fold{fold}_{T}"
+        fold_label = fold_name if fold_name else str(fold)
+        run_name = f"{self.config.data.data_dir.split('/')[-1]}_{self.config.model.name}_{self.config.dataset.name}_Fold{fold_label}_{T}"
         wandb.init(project='Pansori_Artist', name=run_name, group=f'{self.config.dataset.name}_{self.config.train.selection}_{T}', reinit=True)
         wandb.config.update(OmegaConf.to_container(self.config))
 
         self.model.load_state_dict(self.model_state_dict)
         self.optimizer = torch.optim.Adam(self.model.parameters(), self.config.train.lr)
-        print(f"{'='*25}{fold} Fold{'='*25}")
+        print(f"{'='*25} Fold {fold_label} {'='*25}")
 
 
     def split_train_valid_test(self, hash_keys):
@@ -157,7 +279,7 @@ class Trainer:
             else:
                 per_class_acc[cls_name] = ((output[mask] == cls_idx).float().sum() / mask.sum()).cpu().item()
         return per_class_acc
-    
+
     def get_per_class_f1(self, output, y, ignore_label=None):
         label_map = self.dataset.label_map
         ignore_idx = label_map.get(ignore_label) if ignore_label else None
@@ -214,6 +336,11 @@ class FrameTrainer(Trainer):
                 if outputs.shape[1] != y.shape[1]: outputs = outputs[:, :y.shape[1]]
                 loss = self.criterion(outputs.permute(0,2,1), y.argmax(dim=-1))
                 total_loss += loss.item()
+
+                probs = torch.softmax(outputs, dim=-1).cpu().numpy()
+                smoothed = gaussian_filter1d(probs, self.config.filter.sigma, axis=1)
+                outputs = torch.from_numpy(smoothed).to(self.device)
+
                 all_outputs.append(outputs.detach())
                 all_labels.append(y)
 
@@ -227,16 +354,83 @@ class FrameTrainer(Trainer):
         return valid_loss, valid_acc, valid_acc_masked, per_class_acc, per_class_f1, macro_f1, cm
 
 
+    def evaluate_test(self, dataset):
+        """Like evaluate(), but also collects per-song GT and softmax probs for posteriorgram generation."""
+        self.model.eval()
+        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+        total_loss = 0
+        all_preds, all_labels = [], []
+        song_data = {}
+
+        with torch.no_grad():
+            for batch in dataloader:
+                name, x, y = batch
+                x, y = x.to(self.device), y.to(self.device)
+                outputs = self.model(x)
+                if outputs.shape[1] != y.shape[1]:
+                    outputs = outputs[:, :y.shape[1]]
+
+                loss = self.criterion(outputs.permute(0, 2, 1), y.argmax(dim=-1))
+                total_loss += loss.item()
+
+                pred_probs = torch.softmax(outputs, dim=-1)  # (1, T, C)
+                smoothed = gaussian_filter1d(pred_probs.cpu().numpy(), self.config.filter.sigma, axis=1)
+                outputs = torch.from_numpy(smoothed).to(self.device)
+
+                all_preds.append(outputs.detach().argmax(dim=-1).view(-1).cpu())
+                all_labels.append(y.argmax(dim=-1).view(-1).cpu())
+
+                sname = name[0] if isinstance(name, (list, tuple)) else name
+                if sname not in song_data:
+                    song_data[sname] = {'gt': [], 'pred_probs': []}
+                song_data[sname]['gt'].append(y[0].cpu())
+                song_data[sname]['pred_probs'].append(torch.from_numpy(smoothed[0]))
+
+        for sname in song_data:
+            song_data[sname]['gt'] = torch.cat(song_data[sname]['gt'], dim=0).numpy()
+            song_data[sname]['pred_probs'] = torch.cat(song_data[sname]['pred_probs'], dim=0).numpy()
+
+        all_preds = torch.cat(all_preds).view(-1)
+        all_labels = torch.cat(all_labels).view(-1)
+        test_loss = total_loss / len(dataset)
+        test_acc, test_acc_masked = self.get_masked_acc(all_preds, all_labels, target_mask='Unknown')
+        per_class_acc = self.get_per_class_acc(all_preds, all_labels)
+        per_class_f1, macro_f1 = self.get_per_class_f1(all_preds, all_labels, ignore_label='Unknown')
+        cm = self.plot_confusion_matrix(all_preds, all_labels, range(dataset.num_classes))
+
+        return test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm, song_data
+
+
+    def save_posteriorgrams(self, song_data, out_dir, class_names):
+        """Save a posteriorgram PNG for each song, then free memory."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for sname, data in song_data.items():
+            stem = Path(sname).stem
+            fig = plot_posteriorgram(sname, data['gt'], data['pred_probs'], class_names)
+            fig.savefig(out_dir / f"{stem}.png", dpi=120, bbox_inches='tight')
+            fig.clf()
+            plt.close(fig)
+            del data['gt'], data['pred_probs']
+        plt.close('all')
+        gc.collect()
+
+
     def train(self):
         fold_best_acc = {}
+        target_folds = self.config.train.get('target_folds', None)
 
         # Define selection
         selection = self.init_selection()
 
         # Start fold loop
         for fold, hash_keys in enumerate(selection, start=1):
+            if target_folds is not None and fold not in target_folds:
+                continue
+
             # init fold wandb, model, & optimizer
-            self.init_new_fold(fold)
+            fold_name = self.fold_names[fold - 1] if self.fold_names else None
+            self.init_new_fold(fold, fold_name=fold_name)
 
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0
@@ -300,7 +494,7 @@ class FrameTrainer(Trainer):
             print(f"Fold {fold} Best Accuracy: {best_acc:.4f} at iteration {best_iteration}")
 
             self.model.load_state_dict(torch.load(self.save_dir/f'fold{fold}_best_model.pt', weights_only=True))
-            test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm = self.evaluate(testset)
+            test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm, song_data = self.evaluate_test(testset)
             wandb.log({"Test/Loss": test_loss, "Test/Acc": test_acc, "Test/Masked Acc": test_acc_masked,
                        "Test/Macro F1": macro_f1,
                        **{f"Test/Acc_{k}": v for k, v in per_class_acc.items()},
@@ -309,6 +503,11 @@ class FrameTrainer(Trainer):
             print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test Masked Acc: {test_acc_masked:.4f}")
             print(f"Per-class Acc: { {k: f'{v:.4f}' for k, v in per_class_acc.items()} }")
             fold_best_acc[fold] = test_acc_masked
+
+            CLASS_NAMES = {0: 'Unknown', 1: 'UJO', 2: 'GMJ', 3: 'ANR', 4: 'CJO'}
+            class_names = [CLASS_NAMES.get(i, str(i)) for i in range(testset.num_classes)]
+            fold_out_dir = self.save_dir / f'fold{fold}_posteriorgrams'
+            self.save_posteriorgrams(song_data, fold_out_dir, class_names)
 
         if wandb.run is not None: wandb.finish()
 
@@ -364,7 +563,8 @@ class SegmentTrainer(Trainer):
         selection = self.init_selection()
 
         for fold, hash_keys in enumerate(selection, start=1):
-            self.init_new_fold(fold)
+            fold_name = self.fold_names[fold - 1] if self.fold_names else None
+            self.init_new_fold(fold, fold_name=fold_name)
 
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0

@@ -4,12 +4,12 @@ hydra:
 
 # Data sources
 data:
-  data_dir: "/home/sangheon/Desktop/Pansori_Data/audio_original"
+  data_dir: "/home/sangheon/Desktop/Pansori_Data/Audio"
   label_dir: "/home/sangheon/Desktop/PansoriModeChangeDetection/data/Label"
 
 # Dataset configuration
 dataset:
-  name: "MelFrameDataset"
+  name: "ChromaFrameDataset"
   params:
     num_classes: 5
     sr: 16000
@@ -17,7 +17,7 @@ dataset:
     window: 30
     n_fft: 2048
     hop_length: 512
-    target_bins: 40
+    n_chroma: 12
     aug: True
 
 # Model
@@ -26,7 +26,7 @@ model:
   params:
     num_layers: 3
     in_channels: 1
-    num_bins: ${dataset.params.target_bins}
+    num_bins: ${dataset.params.n_chroma}
 
     last_hidden_dim: 64
     use_gradual_size: False

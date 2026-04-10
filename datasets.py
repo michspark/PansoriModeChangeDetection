@@ -16,7 +16,8 @@ import torchaudio
 from torch.utils.data import Dataset
 from torchaudio.transforms import TimeStretch, FrequencyMasking
 from torchaudio.transforms import Spectrogram, MelScale, AmplitudeToDB
-
+from nnAudio.features.cqt import CQT
+from nnAudio.librosa_functions import chroma
 
 class BaseDataset(Dataset):
     def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, window=20, margin_ratio=1, is_valid=False, aug=False):
@@ -477,8 +478,6 @@ class MelDataset():
 
         return frame_label
 
-
-
 class MelFrameDataset(AudioFrameDataset, MelDataset):
     def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, n_fft=2048, hop_length=512, target_bins=40, margin_ratio=1.6, is_valid=False, aug=False):
         AudioFrameDataset.__init__(self, data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
@@ -618,6 +617,375 @@ class MelSegmentDataset(AudioSegmentDataset, MelDataset):
         assert mel.shape[1] == self.window_frame, f"mel.shape[1] != self.window_frame: {mel.shape[1]} != {self.window_frame}"
         return hash_key, mel, label
 
+
+class CQTDataset():
+    def __init__(self, sr=16000, hop_length=512, n_bins=84, bins_per_octave=12, is_valid=False, aug=False):
+        self.sr = sr
+        self.hop_length = hop_length
+        self.n_bins = n_bins
+        self.bins_per_octave = bins_per_octave
+        self.window_frame = None
+        self.is_valid = is_valid
+        self.aug = aug
+
+        self.cqt_transform = CQT(
+            sr=sr, hop_length=hop_length, fmin=32.7,
+            n_bins=n_bins, bins_per_octave=bins_per_octave,
+            filter_scale=1, norm=1, window='hann',
+            center=True, pad_mode='reflect',
+            trainable=False, output_format='Magnitude', verbose=False
+        )
+
+        if self.aug:
+            self.freq_mask = FrequencyMasking(freq_mask_param=10)
+
+
+    def _apply_cqt_time_stretch(self, cqt):
+        """Approximate time stretch on magnitude CQT via bilinear interpolation."""
+        stretch_factor = 1.0
+        if random.random() < 0.3:
+            stretch_factor = random.uniform(0.7, 1.5)
+            new_len = int(cqt.shape[-1] / stretch_factor)
+            if new_len > 0:
+                cqt = torch.nn.functional.interpolate(
+                    cqt.unsqueeze(0).unsqueeze(0),
+                    scale_factor=(1.0, 1.0 / stretch_factor),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0).squeeze(0)
+        return cqt, stretch_factor
+
+
+    def apply_spec_pitch_shift(self, cqt):
+        if random.random() < 0.3:
+            shift_steps = random.randint(-4, 4)
+            if shift_steps == 0: return cqt
+
+            cqt_shifted = torch.roll(cqt, shifts=shift_steps, dims=-2)
+            if shift_steps > 0: cqt_shifted[..., :shift_steps, :] = 0
+            else:
+                shift_steps = abs(shift_steps)
+                cqt_shifted[..., -shift_steps:, :] = 0
+            return cqt_shifted
+
+        return cqt
+
+
+    def apply_spec_augmentation(self, cqt):
+        if not self.aug or random.random() > 0.8: return cqt
+        if random.random() < 0.5: cqt = self.apply_spec_pitch_shift(cqt)
+        if random.random() < 0.5: cqt = self.freq_mask(cqt)
+        return cqt
+
+
+    def apply_time_stretch(self, label, stretch_factor):
+        if stretch_factor == 1.0: return label
+        orig_length = label.shape[0]
+        new_length = int(orig_length / stretch_factor)
+        stretched_label = torch.zeros((new_length, label.shape[1]))
+
+        if new_length > 0:
+            orig_indices = torch.linspace(0, orig_length - 1, new_length).long()
+            stretched_label[:new_length] = label[orig_indices]
+
+        return stretched_label
+
+
+    def ms_to_frame_label(self, ms_label):
+        ms_per_frame = self.hop_length / self.sr * 1000
+        frame_width = int(ms_per_frame)
+        num_frames = int(ms_label.shape[0] / ms_per_frame)
+
+        if num_frames == 0:
+            pad_len = frame_width - ms_label.shape[0]
+            ms_label = torch.nn.functional.pad(ms_label, (0, 0, 0, pad_len))
+            num_frames = 1
+
+        trimmed = ms_label[:num_frames * frame_width]
+        grouped = trimmed.view(num_frames, frame_width, -1)
+        class_sums = grouped.sum(dim=1)
+        frame_label = (class_sums == class_sums.max(dim=-1, keepdim=True).values).float()
+
+        return frame_label
+
+
+class CQTFrameDataset(AudioFrameDataset, CQTDataset):
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20,
+                 hop_length=512, n_bins=84, bins_per_octave=12, margin_ratio=1.6, is_valid=False, aug=False):
+        AudioFrameDataset.__init__(self, data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
+        CQTDataset.__init__(self, sr=sr, hop_length=hop_length, n_bins=n_bins, bins_per_octave=bins_per_octave, is_valid=is_valid, aug=aug)
+        self.window_frame = window * sr // hop_length
+        self.loaded_data = self._preload_cqt(self.loaded_data)
+        if self.aug and hasattr(self, 'pitch_shifted_audio') and self.pitch_shifted_audio:
+            self.pitch_shifted_cqt = self._preload_pitch_shifted_cqt()
+
+    def _audio_to_cqt(self, audio):
+        """Compute CQT magnitude without augmentation."""
+        cqt = self.cqt_transform(audio)  # (batch, n_bins, frames)
+        cqt = cqt.squeeze(0)             # (n_bins, frames)
+        cqt = torch.log1p(cqt * 1000)   # log compression
+        return cqt
+
+    def _preload_cqt(self, path_dict):
+        cqt_dict = {}
+        for hash_key, audio_path in tqdm(path_dict.items(), desc='Preload CQT Spectrograms'):
+            audio = self._load_audio(audio_path)
+            cqt_dict[hash_key] = self._audio_to_cqt(audio)
+        return cqt_dict
+
+    def _preload_pitch_shifted_cqt(self):
+        cqt_dict = {}
+        for hash_key, audio_list in tqdm(self.pitch_shifted_audio.items(), desc='Preload Pitch-Shifted CQT'):
+            cqt_dict[hash_key] = [self._audio_to_cqt(a) for a in audio_list]
+        del self.pitch_shifted_audio
+        return cqt_dict
+
+    def __len__(self):
+        return super().__len__()
+
+    def __getitem__(self, idx):
+        if self.is_valid:
+            hash_key, start_sample, end_sample = self.val_segments[idx]
+            cqt_full = self.loaded_data[hash_key]
+            start_frame = start_sample // self.hop_length
+            end_frame = end_sample // self.hop_length
+            cqt = cqt_full[:, start_frame:end_frame]
+            if cqt.shape[-1] < self.window_frame:
+                cqt = torch.nn.functional.pad(cqt, (0, self.window_frame - cqt.shape[-1]))
+            start_ms = int(start_sample / self.sr * 1000)
+            end_ms = int(end_sample / self.sr * 1000)
+            label = self.loaded_label[hash_key][start_ms:end_ms]
+            frame_label = self.ms_to_frame_label(label)
+            if cqt.shape[-1] != frame_label.shape[0]: cqt = cqt[:, :frame_label.shape[0]]
+            return hash_key, cqt, frame_label
+
+        hash_key = self.training_instances[idx]
+
+        if self.aug and hasattr(self, 'pitch_shifted_cqt') and hash_key in self.pitch_shifted_cqt and random.random() < 0.5:
+            cqt_full = random.choice(self.pitch_shifted_cqt[hash_key])
+        else:
+            cqt_full = self.loaded_data[hash_key]
+
+        total_frames = cqt_full.shape[1]
+        window_frames = self.window_frame
+        margin_frames = int(self.margin_ratio * window_frames)
+
+        if total_frames > window_frames:
+            start_frame = random.randint(0, total_frames - window_frames)
+        else:
+            start_frame = 0
+        end_frame = start_frame + window_frames
+
+        if start_frame - margin_frames // 2 < 0:
+            end_frame = margin_frames
+            start_frame = 0
+        elif end_frame + margin_frames // 2 > total_frames:
+            end_frame = total_frames
+            start_frame = max(0, total_frames - margin_frames)
+        else:
+            start_frame = start_frame - margin_frames // 2
+            end_frame = end_frame + margin_frames // 2
+
+        cqt = cqt_full[:, start_frame:end_frame].clone()
+
+        if self.aug:
+            cqt, stretch_factor = self._apply_cqt_time_stretch(cqt)
+        else:
+            stretch_factor = 1.0
+
+        start_ms = int(start_frame * self.hop_length / self.sr * 1000)
+        end_ms = int(end_frame * self.hop_length / self.sr * 1000)
+        label = self.loaded_label[hash_key][start_ms:end_ms]
+
+        center_start = (cqt.shape[1] - window_frames) // 2
+        cqt = cqt[:, center_start:center_start + window_frames]
+        if self.aug: cqt = self.apply_spec_augmentation(cqt)
+
+        label = self.apply_time_stretch(label, stretch_factor)
+        frame_label = self.ms_to_frame_label(label)
+        frame_label = frame_label[center_start:center_start + window_frames]
+        assert frame_label.shape[0] == cqt.shape[1], f"frame_label.shape[0] != cqt.shape[1]: {frame_label.shape[0]} != {cqt.shape[1]}, time stretch factor: {stretch_factor}"
+        return hash_key, cqt, frame_label
+
+class ChromaDataset():
+    def __init__(self, sr=16000, n_fft=2048, hop_length=512, n_chroma=12, is_valid=False, aug=False):
+        self.sr = sr
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.n_chroma = n_chroma
+        self.window_frame = None  # set by subclass via window param
+        self.is_valid = is_valid
+        self.aug = aug
+
+        self.spec_cvt = Spectrogram(n_fft=n_fft, hop_length=hop_length, power=1.0)
+
+        # Build chroma filter bank and register as a buffer-style tensor
+        chroma_weights = chroma(sr=sr, n_fft=n_fft, n_chroma=n_chroma)  # (n_chroma, n_fft//2+1)
+        self.chroma_weights = torch.from_numpy(chroma_weights)  # keep on CPU; move in _audio_to_chroma
+
+        if self.aug:
+            self.freq_mask = FrequencyMasking(freq_mask_param=4)  # n_chroma=12 so small param
+
+
+    def _apply_chroma_time_stretch(self, chroma_gram):
+        """Approximate time stretch on chromagram via bilinear interpolation."""
+        stretch_factor = 1.0
+        if random.random() < 0.3:
+            stretch_factor = random.uniform(0.7, 1.5)
+            new_len = int(chroma_gram.shape[-1] / stretch_factor)
+            if new_len > 0:
+                chroma_gram = torch.nn.functional.interpolate(
+                    chroma_gram.unsqueeze(0).unsqueeze(0),
+                    scale_factor=(1.0, 1.0 / stretch_factor),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0).squeeze(0)
+        return chroma_gram, stretch_factor
+
+
+    def apply_spec_pitch_shift(self, chroma_gram):
+        """Roll along the chroma axis — musically meaningful (circular pitch class shift)."""
+        if random.random() < 0.3:
+            shift_steps = random.randint(-3, 3)
+            if shift_steps == 0: return chroma_gram
+            chroma_gram = torch.roll(chroma_gram, shifts=shift_steps, dims=-2)
+        return chroma_gram
+
+
+    def apply_spec_augmentation(self, chroma_gram):
+        if not self.aug or random.random() > 0.8: return chroma_gram
+        if random.random() < 0.5: chroma_gram = self.apply_spec_pitch_shift(chroma_gram)
+        if random.random() < 0.5: chroma_gram = self.freq_mask(chroma_gram)
+        return chroma_gram
+
+
+    def apply_time_stretch(self, label, stretch_factor):
+        if stretch_factor == 1.0: return label
+        orig_length = label.shape[0]
+        new_length = int(orig_length / stretch_factor)
+        stretched_label = torch.zeros((new_length, label.shape[1]))
+        if new_length > 0:
+            orig_indices = torch.linspace(0, orig_length - 1, new_length).long()
+            stretched_label[:new_length] = label[orig_indices]
+        return stretched_label
+
+
+    def ms_to_frame_label(self, ms_label):
+        ms_per_frame = self.hop_length / self.sr * 1000
+        frame_width = int(ms_per_frame)
+        num_frames = int(ms_label.shape[0] / ms_per_frame)
+
+        if num_frames == 0:
+            pad_len = frame_width - ms_label.shape[0]
+            ms_label = torch.nn.functional.pad(ms_label, (0, 0, 0, pad_len))
+            num_frames = 1
+
+        trimmed = ms_label[:num_frames * frame_width]
+        grouped = trimmed.view(num_frames, frame_width, -1)
+        class_sums = grouped.sum(dim=1)
+        frame_label = (class_sums == class_sums.max(dim=-1, keepdim=True).values).float()
+        return frame_label
+
+
+class ChromaFrameDataset(AudioFrameDataset, ChromaDataset):
+    def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20,
+                 n_fft=2048, hop_length=512, n_chroma=12, margin_ratio=1.6, is_valid=False, aug=False):
+        AudioFrameDataset.__init__(self, data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
+        ChromaDataset.__init__(self, sr=sr, n_fft=n_fft, hop_length=hop_length, n_chroma=n_chroma, is_valid=is_valid, aug=aug)
+        self.window_frame = window * sr // hop_length
+        self.loaded_data = self._preload_chroma(self.loaded_data)
+        if self.aug and hasattr(self, 'pitch_shifted_audio') and self.pitch_shifted_audio:
+            self.pitch_shifted_chroma = self._preload_pitch_shifted_chroma()
+
+    def _audio_to_chroma(self, audio):
+        """Compute chromagram: STFT magnitude → chroma filter → log compression."""
+        spec = self.spec_cvt(audio)                                   # (1, n_fft//2+1, frames)
+        spec = spec.squeeze(0)                                        # (n_fft//2+1, frames)
+        weights = self.chroma_weights.to(spec.device)                 # (n_chroma, n_fft//2+1)
+        chroma_gram = torch.matmul(weights, spec)                     # (n_chroma, frames)
+        chroma_gram = torch.log1p(chroma_gram * 1000)
+        return chroma_gram
+
+    def _preload_chroma(self, path_dict):
+        chroma_dict = {}
+        for hash_key, audio_path in tqdm(path_dict.items(), desc='Preload Chromagrams'):
+            audio = self._load_audio(audio_path)
+            chroma_dict[hash_key] = self._audio_to_chroma(audio)
+        return chroma_dict
+
+    def _preload_pitch_shifted_chroma(self):
+        chroma_dict = {}
+        for hash_key, audio_list in tqdm(self.pitch_shifted_audio.items(), desc='Preload Pitch-Shifted Chroma'):
+            chroma_dict[hash_key] = [self._audio_to_chroma(a) for a in audio_list]
+        del self.pitch_shifted_audio
+        return chroma_dict
+
+    def __len__(self):
+        return super().__len__()
+
+    def __getitem__(self, idx):
+        if self.is_valid:
+            hash_key, start_sample, end_sample = self.val_segments[idx]
+            chroma_full = self.loaded_data[hash_key]
+            start_frame = start_sample // self.hop_length
+            end_frame = end_sample // self.hop_length
+            chroma_gram = chroma_full[:, start_frame:end_frame]
+            if chroma_gram.shape[-1] < self.window_frame:
+                chroma_gram = torch.nn.functional.pad(chroma_gram, (0, self.window_frame - chroma_gram.shape[-1]))
+            start_ms = int(start_sample / self.sr * 1000)
+            end_ms = int(end_sample / self.sr * 1000)
+            label = self.loaded_label[hash_key][start_ms:end_ms]
+            frame_label = self.ms_to_frame_label(label)
+            if chroma_gram.shape[-1] != frame_label.shape[0]: chroma_gram = chroma_gram[:, :frame_label.shape[0]]
+            return hash_key, chroma_gram, frame_label
+
+        hash_key = self.training_instances[idx]
+
+        if self.aug and hasattr(self, 'pitch_shifted_chroma') and hash_key in self.pitch_shifted_chroma and random.random() < 0.5:
+            chroma_full = random.choice(self.pitch_shifted_chroma[hash_key])
+        else:
+            chroma_full = self.loaded_data[hash_key]
+
+        total_frames = chroma_full.shape[1]
+        window_frames = self.window_frame
+        margin_frames = int(self.margin_ratio * window_frames)
+
+        if total_frames > window_frames:
+            start_frame = random.randint(0, total_frames - window_frames)
+        else:
+            start_frame = 0
+        end_frame = start_frame + window_frames
+
+        if start_frame - margin_frames // 2 < 0:
+            end_frame = margin_frames
+            start_frame = 0
+        elif end_frame + margin_frames // 2 > total_frames:
+            end_frame = total_frames
+            start_frame = max(0, total_frames - margin_frames)
+        else:
+            start_frame = start_frame - margin_frames // 2
+            end_frame = end_frame + margin_frames // 2
+
+        chroma_gram = chroma_full[:, start_frame:end_frame].clone()
+
+        if self.aug:
+            chroma_gram, stretch_factor = self._apply_chroma_time_stretch(chroma_gram)
+        else:
+            stretch_factor = 1.0
+
+        start_ms = int(start_frame * self.hop_length / self.sr * 1000)
+        end_ms = int(end_frame * self.hop_length / self.sr * 1000)
+        label = self.loaded_label[hash_key][start_ms:end_ms]
+
+        center_start = (chroma_gram.shape[1] - window_frames) // 2
+        chroma_gram = chroma_gram[:, center_start:center_start + window_frames]
+        if self.aug: chroma_gram = self.apply_spec_augmentation(chroma_gram)
+
+        label = self.apply_time_stretch(label, stretch_factor)
+        frame_label = self.ms_to_frame_label(label)
+        frame_label = frame_label[center_start:center_start + window_frames]
+        assert frame_label.shape[0] == chroma_gram.shape[1], f"frame_label.shape[0] != chroma_gram.shape[1]: {frame_label.shape[0]} != {chroma_gram.shape[1]}, time stretch factor: {stretch_factor}"
+        return hash_key, chroma_gram, frame_label
 
 
 class PitchDataset(BaseDataset):

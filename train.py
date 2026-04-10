@@ -26,7 +26,7 @@ def set_seed(seed=42):
     print(f"Set Seed {seed}")
 
 
-@hydra.main(config_path="configs/frame", config_name="mel_base")
+@hydra.main(config_path="configs/frame", config_name="chroma_base")
 def main(cfg):
     print(f"Dataset  : {cfg.dataset.name}")
     print(f"Model    : {cfg.model.name}")

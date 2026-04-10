@@ -20,10 +20,8 @@ from torch.utils.data import DataLoader
 import wandb
 from tqdm import tqdm
 from omegaconf import OmegaConf
-from scipy.ndimage import gaussian_filter1d
 
 T = datetime.datetime.now().strftime("%m%d_%H%M")
-
 
 def plot_posteriorgram(song_name, gt, pred_probs, class_names):
     """
@@ -131,12 +129,23 @@ class Trainer:
             fold_dir = Path(self.config.train.stratified_fold_dir)
             fold_files = sorted(fold_dir.glob('*.txt'))
 
+            # Build mapping: stripped_filename (without leading "NN-") -> hash_key
+            stripped_to_hash = {}
+            for _, row in self.dataset.df.drop_duplicates('filename').iterrows():
+                stripped = re.sub(r'^\d+-', '', row['filename'])
+                stripped_to_hash[stripped] = row['hash_key']
+
             chunks = []
             self.fold_names = [f.stem for f in fold_files]
             for fold_file in fold_files:
                 lines = [l.strip() for l in fold_file.read_text(encoding='utf-8').splitlines() if l.strip()]
-                hash_keys = [line.split('-')[0] for line in lines]
-                hash_keys = [hk for hk in hash_keys if hk in self.dataset.loaded_hash]
+                hash_keys = []
+                for line in lines:
+                    hk = line.split('-')[0]
+                    if hk in self.dataset.loaded_hash:
+                        hash_keys.append(hk)
+                    elif line in stripped_to_hash and stripped_to_hash[line] in self.dataset.loaded_hash:
+                        hash_keys.append(stripped_to_hash[line])
                 chunks.append(hash_keys)
                 print(f"  {fold_file.name}: {len(hash_keys)} in dataset")
 
@@ -203,7 +212,7 @@ class Trainer:
 
             # Build normalized_key -> hash_key mapping from audio filenames
             def _audio_key(fname):
-                n = fname.replace('_vocal.wav', '').replace('_vocal.mid', '').replace('_vocal.f0.csv', '')
+                n = re.sub(r'\.(wav|mid|f0\.csv)$', '', fname)
                 n = re.sub(r'^[0-9a-f]+-\d+-', '', n)
                 return n
 
@@ -338,8 +347,7 @@ class FrameTrainer(Trainer):
                 total_loss += loss.item()
 
                 probs = torch.softmax(outputs, dim=-1).cpu().numpy()
-                smoothed = gaussian_filter1d(probs, self.config.filter.sigma, axis=1)
-                outputs = torch.from_numpy(smoothed).to(self.device)
+                outputs = torch.from_numpy(probs).to(self.device)
 
                 all_outputs.append(outputs.detach())
                 all_labels.append(y)
@@ -355,16 +363,25 @@ class FrameTrainer(Trainer):
 
 
     def evaluate_test(self, dataset):
-        """Like evaluate(), but also collects per-song GT and softmax probs for posteriorgram generation."""
+        """Like evaluate(), but also collects per-song/per-segment GT and softmax probs."""
         self.model.eval()
         dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+        # fps for converting frame/sample index to seconds
+        if hasattr(dataset, 'frame_rate'):
+            fps = dataset.frame_rate
+        elif hasattr(dataset, 'sr'):
+            fps = dataset.sr
+        else:
+            fps = 100
 
         total_loss = 0
         all_preds, all_labels = [], []
         song_data = {}
+        segment_results = []
 
         with torch.no_grad():
-            for batch in dataloader:
+            for i, batch in enumerate(dataloader):
                 name, x, y = batch
                 x, y = x.to(self.device), y.to(self.device)
                 outputs = self.model(x)
@@ -375,21 +392,52 @@ class FrameTrainer(Trainer):
                 total_loss += loss.item()
 
                 pred_probs = torch.softmax(outputs, dim=-1)  # (1, T, C)
-                smoothed = gaussian_filter1d(pred_probs.cpu().numpy(), self.config.filter.sigma, axis=1)
-                outputs = torch.from_numpy(smoothed).to(self.device)
-
-                all_preds.append(outputs.detach().argmax(dim=-1).view(-1).cpu())
+                all_preds.append(pred_probs.detach().argmax(dim=-1).view(-1).cpu())
                 all_labels.append(y.argmax(dim=-1).view(-1).cpu())
 
                 sname = name[0] if isinstance(name, (list, tuple)) else name
                 if sname not in song_data:
-                    song_data[sname] = {'gt': [], 'pred_probs': []}
+                    song_data[sname] = {'gt': [], 'pred_probs': [], 'segments': []}
                 song_data[sname]['gt'].append(y[0].cpu())
-                song_data[sname]['pred_probs'].append(torch.from_numpy(smoothed[0]))
+                song_data[sname]['pred_probs'].append(pred_probs[0])
+
+                # Get start/end times for this segment
+                if hasattr(dataset, 'val_segments') and i < len(dataset.val_segments):
+                    _, seg_start, seg_end = dataset.val_segments[i]
+                    start_sec = seg_start / fps
+                    end_sec = seg_end / fps
+                else:
+                    start_sec, end_sec = 0.0, 0.0
+
+                song_data[sname]['segments'].append({
+                    'gt': y[0].cpu().numpy(),
+                    'pred_probs': pred_probs[0].cpu().numpy(),
+                    'start_sec': start_sec,
+                    'end_sec': end_sec,
+                    'loss': loss.item(),
+                })
+
+                seg_preds = pred_probs.detach().argmax(dim=-1).view(-1).cpu()
+                seg_labels = y.argmax(dim=-1).view(-1).cpu()
+                seg_acc, _ = self.get_masked_acc(seg_preds, seg_labels, target_mask='Unknown')
+                seg_per_class_f1, seg_macro_f1 = self.get_per_class_f1(seg_preds, seg_labels, ignore_label='Unknown')
+
+                seg_result = {
+                    'song_name': sname,
+                    'start_sec': f"{start_sec:.1f}",
+                    'end_sec': f"{end_sec:.1f}",
+                    'time_range': f"{start_sec:.0f}-{end_sec:.0f}s",
+                    'loss': round(loss.item(), 6),
+                    'acc': round(seg_acc, 6),
+                    'f1_macro': round(seg_macro_f1, 6),
+                }
+                for cls_name, f1_val in seg_per_class_f1.items():
+                    seg_result[f'f1_{cls_name}'] = round(f1_val, 6)
+                segment_results.append(seg_result)
 
         for sname in song_data:
             song_data[sname]['gt'] = torch.cat(song_data[sname]['gt'], dim=0).numpy()
-            song_data[sname]['pred_probs'] = torch.cat(song_data[sname]['pred_probs'], dim=0).numpy()
+            song_data[sname]['pred_probs'] = torch.cat(song_data[sname]['pred_probs'], dim=0).cpu().numpy()
 
         all_preds = torch.cat(all_preds).view(-1)
         all_labels = torch.cat(all_labels).view(-1)
@@ -399,19 +447,47 @@ class FrameTrainer(Trainer):
         per_class_f1, macro_f1 = self.get_per_class_f1(all_preds, all_labels, ignore_label='Unknown')
         cm = self.plot_confusion_matrix(all_preds, all_labels, range(dataset.num_classes))
 
-        return test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm, song_data
+        return test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm, song_data, segment_results
 
 
-    def save_posteriorgrams(self, song_data, out_dir, class_names):
-        """Save a posteriorgram PNG for each song, then free memory."""
+    def save_posteriorgrams(self, song_data, out_dir, class_names, high_loss_n=50):
+        """Save per-segment and full posteriorgram PNGs. Save top-N high-loss segments as CSV."""
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Collect all segments for high-loss CSV
+        all_segs = [(sname, seg) for sname, data in song_data.items() for seg in data.get('segments', [])]
+        if all_segs:
+            top_n = sorted(all_segs, key=lambda x: x[1].get('loss', 0), reverse=True)[:high_loss_n]
+            rows = [
+                {
+                    'song': sname,
+                    'start_sec': seg['start_sec'],
+                    'end_sec': seg['end_sec'],
+                    'loss': seg.get('loss', 0),
+                }
+                for sname, seg in top_n
+            ]
+            pd.DataFrame(rows).to_csv(out_dir / 'high_loss_segments.csv', index=False)
+
         for sname, data in song_data.items():
             stem = Path(sname).stem
+
+            # Per-segment posteriorgrams
+            for seg in data.get('segments', []):
+                seg_label = f"{seg['start_sec']:.0f}-{seg['end_sec']:.0f}s"
+                title = f"{stem} [{seg_label}]"
+                fig = plot_posteriorgram(title, seg['gt'], seg['pred_probs'], class_names)
+                fig.savefig(out_dir / f"{stem}_{seg_label}.png", dpi=120, bbox_inches='tight')
+                fig.clf()
+                plt.close(fig)
+
+            # Full song posteriorgram
             fig = plot_posteriorgram(sname, data['gt'], data['pred_probs'], class_names)
-            fig.savefig(out_dir / f"{stem}.png", dpi=120, bbox_inches='tight')
+            fig.savefig(out_dir / f"{stem}_full.png", dpi=120, bbox_inches='tight')
             fig.clf()
             plt.close(fig)
             del data['gt'], data['pred_probs']
+
         plt.close('all')
         gc.collect()
 
@@ -494,7 +570,7 @@ class FrameTrainer(Trainer):
             print(f"Fold {fold} Best Accuracy: {best_acc:.4f} at iteration {best_iteration}")
 
             self.model.load_state_dict(torch.load(self.save_dir/f'fold{fold}_best_model.pt', weights_only=True))
-            test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm, song_data = self.evaluate_test(testset)
+            test_loss, test_acc, test_acc_masked, per_class_acc, per_class_f1, macro_f1, cm, song_data, segment_results = self.evaluate_test(testset)
             wandb.log({"Test/Loss": test_loss, "Test/Acc": test_acc, "Test/Masked Acc": test_acc_masked,
                        "Test/Macro F1": macro_f1,
                        **{f"Test/Acc_{k}": v for k, v in per_class_acc.items()},
@@ -502,11 +578,15 @@ class FrameTrainer(Trainer):
                        "Test Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
             print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test Masked Acc: {test_acc_masked:.4f}")
             print(f"Per-class Acc: { {k: f'{v:.4f}' for k, v in per_class_acc.items()} }")
+            print(f"총 곡 수: {len(song_data)}, 총 segment 수: {len(segment_results)}")
             fold_best_acc[fold] = test_acc_masked
 
             CLASS_NAMES = {0: 'Unknown', 1: 'UJO', 2: 'GMJ', 3: 'ANR', 4: 'CJO'}
             class_names = [CLASS_NAMES.get(i, str(i)) for i in range(testset.num_classes)]
             fold_out_dir = self.save_dir / f'fold{fold}_posteriorgrams'
+            fold_out_dir.mkdir(parents=True, exist_ok=True)
+            if segment_results:
+                pd.DataFrame(segment_results).to_csv(fold_out_dir / 'test_results.csv', index=False)
             self.save_posteriorgrams(song_data, fold_out_dir, class_names)
 
         if wandb.run is not None: wandb.finish()

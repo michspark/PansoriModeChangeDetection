@@ -4,7 +4,7 @@ import json
 import random
 import unicodedata
 from pathlib import Path
-from copy import copy
+from copy import copy, deepcopy
 from abc import abstractmethod
 from collections import Counter
 import numpy as np
@@ -1296,3 +1296,101 @@ class PitchSegmentDataset(PitchDataset):
             contour = self.shift_contour(contour)
 
         return hash_key, contour, label
+
+
+
+class CMERTFrameDataset(AudioFrameDataset):
+    def __init__(self,
+                 data_dir,
+                 label_dir,
+                 num_classes=4,
+                 sr=24000,
+                 channels='mono',
+                 window=30,
+                 margin_ratio=1,
+                 is_valid=False,
+                 aug=False):
+        super().__init__(data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
+        self.hop_length = 16000//50 # orig MERT hop_length
+        self.len_window = self.sr * self.window
+        self.len_frames = int(window/(self.hop_length/sr) - 1)
+
+    def ms_to_frame(self, ms_label):
+        ms_per_frame = self.hop_length / self.sr * 1000
+        num_frames = int(ms_label.shape[0] / ms_per_frame) - 1
+
+        frame_label = torch.zeros((num_frames, self.num_classes))
+        for frame_idx in range(num_frames):
+            frame_start_ms = int(frame_idx * ms_per_frame)
+            frame_end_ms = int((frame_idx + 1) * ms_per_frame)
+
+            if frame_start_ms >= ms_label.shape[0]: frame_label[frame_idx, 0] = 1
+            else:
+                frame_end_ms = min(frame_end_ms, ms_label.shape[0])
+                ms_segment = ms_label[frame_start_ms:frame_end_ms]
+
+                if ms_segment.shape[0] > 0:
+                    class_sums = ms_segment.sum(dim=0)
+                    frame_label[frame_idx] = (class_sums == class_sums.max()).float()
+                else: frame_label[frame_idx, 0] = 1
+
+        return frame_label
+
+    def get_split(self, target_hash_keys, split='train'):
+        if split == 'train':
+            self.update_training_instances(target_hash_keys)
+        else:
+            return self.compose_validset(target_hash_keys)
+
+
+    def compose_validset(self, target_hash_keys):
+        validset = deepcopy(self)
+        validset.is_valid = True
+        validset.aug = False
+        validset.loaded_hash = [k for k in target_hash_keys if k in self.loaded_data]
+        validset.loaded_data = {k: self.loaded_data[k] for k in validset.loaded_hash}
+        validset.loaded_label = {k: self.loaded_label[k] for k in validset.loaded_hash}
+        validset.val_segments = self.prepare_val_segments(validset.loaded_hash)
+        return validset
+
+
+    def __len__(self):
+        if self.is_valid: return len(self.val_segments)
+        return len(self.training_instances)
+
+
+    def __getitem__(self, idx):
+        if self.is_valid:
+            hash_key, start, end = self.val_segments[idx]
+            audio = self._load_audio(self.loaded_data[hash_key])
+            label_len = self.loaded_label[hash_key].shape[0] * self.sr // 1000
+            if end > label_len:
+                end = label_len
+                start = end - self.len_window
+            audio = audio[:, start:end].squeeze(0)
+            start_ms, end_ms = int(start/self.sr*1000), int(end/self.sr*1000)
+            ms_label = self.loaded_label[hash_key][start_ms:end_ms]
+            frame_label = self.ms_to_frame(ms_label)
+            return hash_key, audio, frame_label
+
+        hash_key = self.training_instances[idx]
+
+        if self.aug and hasattr(self, 'pitch_shifted_audio') and hash_key in self.pitch_shifted_audio and random.random() < 0.5:
+            audio = random.choice(self.pitch_shifted_audio[hash_key])
+        else:
+            audio = self._load_audio(self.loaded_data[hash_key])
+
+        start = random.randint(0, audio.shape[1] - self.len_window)
+        audio = audio[:, start:start + self.len_window].squeeze(0)
+
+        start_ms = int(start / self.sr * 1000)
+        end_ms = int((start + self.len_window) / self.sr * 1000)
+        ms_label = self.loaded_label[hash_key][start_ms:end_ms]
+
+        if self.aug: audio = self.apply_audio_augmentation(audio)
+
+        frame_label = self.ms_to_frame(ms_label)
+        return hash_key, audio, frame_label
+
+
+

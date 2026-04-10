@@ -518,7 +518,7 @@ class FrameTrainer(Trainer):
             validset = self.dataset.get_split(valid_hash_keys, split='valid')
             testset = self.dataset.get_split(test_hash_keys, split='test')
             print('Trainset:', len(train_hash_keys), 'Validset:', len(valid_hash_keys), 'Testset:', len(test_hash_keys))
-            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=16, pin_memory=True)
 
             # Start iter loop
             pbar = tqdm(total=self.num_iterations, desc=f"Fold {fold}")
@@ -656,9 +656,9 @@ class SegmentTrainer(Trainer):
             self.dataset.get_split(train_hash_keys, split='train')
             print('Trainset:', len(train_hash_keys), 'Validset:', len(valid_hash_keys), 'Testset:', len(test_hash_keys))
 
-            valid_loader = DataLoader(validset, batch_size=self.batch_size, shuffle=False)
-            test_loader = DataLoader(testset, batch_size=self.batch_size, shuffle=False)
-            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+            valid_loader = DataLoader(validset, batch_size=self.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+            test_loader = DataLoader(testset, batch_size=self.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=16, pin_memory=True)
             train_iter = iter(train_loader)
 
             # Start iter loop

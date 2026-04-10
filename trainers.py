@@ -95,7 +95,7 @@ class Trainer:
 
         elif self.config.train.selection == 'Artist':
             selection = []
-            df = pd.read_csv('data/Stratify/stratify.csv')
+            df = pd.read_csv(self.config.stratify)
 
             folds = sorted(set(df['artist_stratify']))
             for fold in folds:
@@ -116,7 +116,7 @@ class Trainer:
     def init_new_fold(self, fold):
         if wandb.run is not None: wandb.finish()
         run_name = f"{self.config.data.data_dir.split('/')[-1]}_{self.config.model.name}_{self.config.dataset.name}_Fold{fold}_{T}"
-        wandb.init(project='Pansori_Artist', name=run_name, group=f'{self.config.dataset.name}_{self.config.train.selection}_{T}', reinit=True)
+        wandb.init(project='Pansori_CMERT', name=run_name, group=f'{self.config.dataset.name}_{self.config.train.selection}_{T}', reinit=True)
         wandb.config.update(OmegaConf.to_container(self.config))
 
         self.model.load_state_dict(self.model_state_dict)
@@ -274,6 +274,8 @@ class SegmentTrainer(Trainer):
         x, y = x.to(self.device), y.to(self.device)
         self.optimizer.zero_grad()
         outputs = self.model(x)
+        # print(x.shape ,outputs.shape, y.shape)
+        # if outputs.ndim!=y.ndim: outputs=outputs.unsqueeze(0)
         loss = self.criterion(outputs, y)
         loss.backward()
         self.optimizer.step()
@@ -295,6 +297,8 @@ class SegmentTrainer(Trainer):
                 _, x, y = batch
                 x, y = x.to(self.device), y.to(self.device)
                 outputs = self.model(x)
+                # print(x.shape ,outputs.shape, y.shape)
+                # if outputs.ndim!=y.ndim: outputs=outputs.unsqueeze(0)
                 loss = self.criterion(outputs, y)
                 total_loss += loss.item()
                 all_outputs.append(outputs.detach())

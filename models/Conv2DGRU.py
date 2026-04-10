@@ -66,10 +66,10 @@ class SegConv2DGRU(nn.Module):
         else: out_freq = config.num_bins
         self.gru = nn.GRU(input_size=self.params[-1]['output_channel']*out_freq, hidden_size=self.hidden_dim, num_layers=self.num_gru, batch_first=True, dropout=self.dropout, bidirectional=True)
 
-        if int(eval(config.pool_size)[1])==1:
-            out_time = int(eval(config.num_frames))
-        else:
-            out_time = int(eval(config.num_frames)) // (2 ** config.num_layers)
+        # if int(eval(config.pool_size)[1])==1:
+        #     out_time = int(eval(config.num_frames))
+        # else:
+        #     out_time = int(eval(config.num_frames)) // (2 ** config.num_layers)
         # self.fc = nn.Linear(self.hidden_dim*2*out_time, self.num_classes)
         self.fc = nn.Linear(self.hidden_dim*2, self.num_classes)
 

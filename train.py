@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 
 import torch
 import torch.nn as nn
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
 
 DEV = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -30,7 +30,7 @@ def set_seed(seed=42):
     print(f"Set Seed {seed}")
 
 
-@hydra.main(config_path="configs/frame", config_name="crepe_best")
+@hydra.main(config_path="configs/frame", config_name="cmert")
 def main(cfg):
     set_seed(cfg.train.random_seed)
 
@@ -54,7 +54,10 @@ def main(cfg):
     model_class = getattr(models, model_name)
     model = model_class(model_params)
 
-    optimizer = Adam(model.parameters(), lr=cfg.train.lr)
+    trainable_params = [param for name, param in model.named_parameters() if param.requires_grad]
+    optimizer = AdamW(trainable_params, lr=cfg.train.lr)
+    print(f"Total parameters: {sum(p.numel() for p in model.parameters())}")
+    print(f"Trainable parameters: {sum(p.numel() for p in trainable_params)}")
 
     trainer_name = cfg.train.trainer
     trainer_class = getattr(trainers, trainer_name)

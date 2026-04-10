@@ -1,0 +1,78 @@
+hydra:
+  run:
+    dir: .
+
+# Data sources
+data:
+  data_dir: "/home/jinin/userdata/PansoriModeChangeDetection/data/SeparatedAudio"
+  label_dir: "/home/jinin/userdata/PansoriModeChangeDetection/data/Label"
+
+# Dataset configuration
+dataset:
+  name: "CMERTFrameDataset"
+  params:
+    num_classes: 4
+
+    sr: 24000
+    channels: 'mono'
+    window: 30
+
+    aug: True
+    # is_valid: False
+
+# Model
+model:
+  name: "CMERTClassifier"
+  # name: "CMERTConv1DEnc"
+  # name: "CMERTConv1DGRU"
+  params:
+    embed_dims: 512
+    num_classes: ${dataset.params.num_classes}
+
+    num_layers: 3
+    in_channels: 768
+
+    last_hidden_dim: 128
+    use_gradual_size: False
+
+    kernel_size: 3
+    pool_size: False
+    dilation: 1
+    cnn_dropout: 0.25
+
+    num_gru: 3
+    hidden_dim: 128
+    dropout: 0.25
+
+
+# Loss params
+loss:
+  name: FocalLoss # If alpha=1 gamma=0: FocalLoss -> CrossEntropyLoss
+  params:
+    alpha: 1
+    gamma: 0 # 1.0
+    ignore_index: 3
+
+# Training parameters
+train:
+  trainer: "FrameTrainer"
+  lr: 3e-4
+  batch_size: 8
+  num_iterations: 4000
+  eval_interval: 200
+  save_interval: 25000
+  random_seed: 42
+  selection: Stratify # KFold # Artist # Stratify
+
+# Cross-validation parameters
+kfold:
+  n_splits: 5
+  shuffle: True
+  random_state: ${train.random_seed}
+
+stratify: "/home/jinin/userdata/PansoriModeChangeDetection/data/Stratify/stratify.csv"
+
+
+# Directory paths
+dir:
+  save_dir: "weights/cmert"

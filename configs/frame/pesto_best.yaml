@@ -56,10 +56,10 @@ train:
   eval_interval: 200
   save_interval: 1000
   random_seed: 42
-  selection: Stratify   # SharedFold | KFold | Stratify | StratifyHalf | Artist | RandomSplit
+  selection: SongStratified   # SongStratified | SharedFold | KFold | Artist | RandomSplit | Version
   shared_fold_dir:
-  stratified_fold_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_random_fold"
-  stratified_half_fold_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_stratified_folds_half" 
+  song_stratified_dir: "/home/sangheon/Desktop/Pansori_Data/song_stratified"
+  version_split_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_version_split"
   fold_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_stratified_folds"  # shared 10-fold split files
   k_folds: 10
   target_folds: null  # e.g. [1] or [1,2,3] to run only specific folds; null = run all

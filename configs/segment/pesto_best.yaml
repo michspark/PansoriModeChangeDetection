@@ -56,7 +56,8 @@ train:
   eval_interval: 200
   save_interval: 1000
   random_seed: 42
-  selection: Artist # Stratify # KFold
+  selection: Artist # SongStratified # KFold
+  version_split_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_version_split"
 
 # Cross-validation parameters
 kfold:

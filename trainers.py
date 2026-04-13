@@ -2,6 +2,7 @@ import datetime
 import gc
 import os
 import re
+import shutil
 from pathlib import Path
 from copy import deepcopy
 import numpy as np
@@ -12,6 +13,7 @@ from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.font_manager as fm
 from matplotlib.patches import Patch
 from sklearn.metrics import confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
@@ -22,6 +24,9 @@ from tqdm import tqdm
 from omegaconf import OmegaConf
 
 T = datetime.datetime.now().strftime("%m%d_%H%M")
+
+_korean_font = fm.FontProperties(fname='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
+plt.rcParams['font.family'] = _korean_font.get_name()
 
 def plot_posteriorgram(song_name, gt, pred_probs, class_names):
     """
@@ -86,6 +91,21 @@ class Trainer:
         self.fold_names = None
         self.model.to(self.device)
 
+        # hash_key → song filename lookup (deduplicated)
+        if hasattr(dataset, 'df') and 'hash_key' in dataset.df.columns and 'filename' in dataset.df.columns:
+            self.hash_to_name = (
+                dataset.df.drop_duplicates('hash_key')
+                .set_index('hash_key')['filename']
+                .to_dict()
+            )
+        else:
+            self.hash_to_name = {}
+
+
+    def _hash_stem(self, hash_key):
+        """Return '{filename}_{hash_key}' if a name is known, else just '{hash_key}'."""
+        name = self.hash_to_name.get(hash_key, '')
+        return f"{name}_{hash_key}" if name else hash_key
 
     def plot_confusion_matrix(self, output, y, class_names):
         true_flat = y.reshape(-1).cpu().numpy()
@@ -125,39 +145,8 @@ class Trainer:
                 test_hash_keys = [self.dataset.loaded_hash[i] for i in test_idx]
                 selection.append([train_hash_keys, test_hash_keys])
 
-        elif self.config.train.selection == 'Stratify':
-            fold_dir = Path(self.config.train.stratified_fold_dir)
-            fold_files = sorted(fold_dir.glob('*.txt'))
-
-            # Build mapping: stripped_filename (without leading "NN-") -> hash_key
-            stripped_to_hash = {}
-            for _, row in self.dataset.df.drop_duplicates('filename').iterrows():
-                stripped = re.sub(r'^\d+-', '', row['filename'])
-                stripped_to_hash[stripped] = row['hash_key']
-
-            chunks = []
-            self.fold_names = [f.stem for f in fold_files]
-            for fold_file in fold_files:
-                lines = [l.strip() for l in fold_file.read_text(encoding='utf-8').splitlines() if l.strip()]
-                hash_keys = []
-                for line in lines:
-                    hk = line.split('-')[0]
-                    if hk in self.dataset.loaded_hash:
-                        hash_keys.append(hk)
-                    elif line in stripped_to_hash and stripped_to_hash[line] in self.dataset.loaded_hash:
-                        hash_keys.append(stripped_to_hash[line])
-                chunks.append(hash_keys)
-                print(f"  {fold_file.name}: {len(hash_keys)} in dataset")
-
-            k = len(chunks)
-            selection = []
-            for i in range(k):
-                val_i = (i + 1) % k
-                train_keys = [hk for j, chunk in enumerate(chunks) if j != i and j != val_i for hk in chunk]
-                selection.append([train_keys, chunks[val_i], chunks[i]])
-
-        elif self.config.train.selection == 'StratifyHalf':
-            fold_dir = Path(self.config.train.stratified_half_fold_dir)
+        elif self.config.train.selection == 'SongStratified':
+            fold_dir = Path(self.config.train.song_stratified_dir)
             fold_files = sorted(fold_dir.glob('*.txt'))
 
             from collections import defaultdict
@@ -241,7 +230,21 @@ class Trainer:
                 train_keys = [hk for j in range(k) if j != i and j != val_i for hk in chunks[j]]
                 selection.append([train_keys, chunks[val_i], chunks[i]])
 
-        else: Exception("Have to select config.train.selection: [KFold, Stratify, RandomSplit, SharedFold]")
+        elif self.config.train.selection == 'Version':
+            split_dir = Path(self.config.train.version_split_dir)
+            loaded = set(self.dataset.loaded_hash)
+            def _load_keys(fname):
+                lines = [l.strip() for l in (split_dir / fname).read_text(encoding='utf-8').splitlines() if l.strip()]
+                keys = [line.split('-')[0] for line in lines]
+                return [hk for hk in keys if hk in loaded]
+            train_keys = _load_keys('train.txt')
+            val_keys   = _load_keys('val.txt')
+            test_keys  = _load_keys('test.txt')
+            print(f"  Version split — train: {len(train_keys)}, val: {len(val_keys)}, test: {len(test_keys)}")
+            self.fold_names = ['version']
+            selection = [[train_keys, val_keys, test_keys]]
+
+        else: Exception("Have to select config.train.selection: [KFold, SongStratified, Artist, RandomSplit, SharedFold, Version]")
 
         return selection
 
@@ -255,6 +258,14 @@ class Trainer:
 
         self.model.load_state_dict(self.model_state_dict)
         self.optimizer = torch.optim.Adam(self.model.parameters(), self.config.train.lr)
+        sched_cfg = self.config.train.get('lr_scheduler', {})
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=sched_cfg.get('factor', 0.5),
+            patience=sched_cfg.get('patience', 5),
+            min_lr=sched_cfg.get('min_lr', 1e-6),
+        )
         print(f"{'='*25} Fold {fold_label} {'='*25}")
 
 
@@ -424,6 +435,7 @@ class FrameTrainer(Trainer):
 
                 seg_result = {
                     'song_name': sname,
+                    'filename': self.hash_to_name.get(sname, ''),
                     'start_sec': f"{start_sec:.1f}",
                     'end_sec': f"{end_sec:.1f}",
                     'time_range': f"{start_sec:.0f}-{end_sec:.0f}s",
@@ -461,6 +473,7 @@ class FrameTrainer(Trainer):
             rows = [
                 {
                     'song': sname,
+                    'song_name': self.hash_to_name.get(sname, ''),
                     'start_sec': seg['start_sec'],
                     'end_sec': seg['end_sec'],
                     'loss': seg.get('loss', 0),
@@ -470,7 +483,7 @@ class FrameTrainer(Trainer):
             pd.DataFrame(rows).to_csv(out_dir / 'high_loss_segments.csv', index=False)
 
         for sname, data in song_data.items():
-            stem = Path(sname).stem
+            stem = self._hash_stem(sname)
 
             # Per-segment posteriorgrams
             for seg in data.get('segments', []):
@@ -482,7 +495,7 @@ class FrameTrainer(Trainer):
                 plt.close(fig)
 
             # Full song posteriorgram
-            fig = plot_posteriorgram(sname, data['gt'], data['pred_probs'], class_names)
+            fig = plot_posteriorgram(stem, data['gt'], data['pred_probs'], class_names)
             fig.savefig(out_dir / f"{stem}_full.png", dpi=120, bbox_inches='tight')
             fig.clf()
             plt.close(fig)
@@ -492,12 +505,121 @@ class FrameTrainer(Trainer):
         gc.collect()
 
 
+    def _save_hard_train_segments(self, train_hash_keys, out_dir, class_names, top_n=30):
+        """Run best-model inference on train split; save top-N highest-loss segments as CSV + posteriorgrams."""
+        print(f"  Hard-train-segment analysis ({len(train_hash_keys)} train songs)...")
+        hard_trainset = self.dataset.get_split(train_hash_keys, split='test')
+        _, _, _, _, _, _, _, train_song_data, train_seg_results = self.evaluate_test(hard_trainset)
+
+        hard_dir = out_dir / 'hard_train_segments'
+        hard_dir.mkdir(parents=True, exist_ok=True)
+
+        # Top-N by loss → CSV (song_name, filename, time_range, start_sec, end_sec, loss)
+        top = sorted(train_seg_results, key=lambda r: r['loss'], reverse=True)[:top_n]
+        top_df = pd.DataFrame(top)[['song_name', 'time_range', 'start_sec', 'end_sec', 'loss']].copy()
+        top_df.insert(1, 'filename', top_df['song_name'].map(lambda h: self.hash_to_name.get(h, '')))
+        top_df.to_csv(hard_dir / f'hard_train_top{top_n}.csv', index=False)
+
+        # Posteriorgrams only for the top-N segments
+        top_keys = {(r['song_name'], r['start_sec']) for r in top}
+        for sname, data in train_song_data.items():
+            for seg in data.get('segments', []):
+                if (sname, f"{seg['start_sec']:.1f}") not in top_keys:
+                    continue
+                stem = self._hash_stem(sname)
+                seg_label = f"{seg['start_sec']:.0f}-{seg['end_sec']:.0f}s"
+                title = f"{stem} [{seg_label}]  loss={seg['loss']:.4f}"
+                fig = plot_posteriorgram(title, seg['gt'], seg['pred_probs'], class_names)
+                fig.savefig(hard_dir / f"{stem}_{seg_label}.png", dpi=120, bbox_inches='tight')
+                fig.clf()
+                plt.close(fig)
+        plt.close('all')
+        gc.collect()
+        print(f"  Saved top-{top_n} hard train segments → {hard_dir}")
+
+
+    def _load_version_test_hashes(self):
+        """Return hash keys listed in song_stratified/version_test.txt (if available)."""
+        song_strat_dir = self.config.train.get('song_stratified_dir', None)
+        if not song_strat_dir:
+            return set()
+        vt_file = Path(song_strat_dir) / 'version_test.txt'
+        if not vt_file.exists():
+            return set()
+        hashes = set()
+        for line in vt_file.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            hashes.add(line.split()[0])  # format: "hash_key singer — description"
+        print(f"  Version test songs: {len(hashes)} hash keys from {vt_file.name}")
+        return hashes
+
+
+    def _log_version_test_summary(self, vt_song_data, vt_segment_results, vt_png_paths):
+        """Aggregate version test results across all folds → wandb run + CSV + posteriorgrams."""
+        if not vt_song_data:
+            print("  No version test songs collected — skipping summary.")
+            return
+
+        # Aggregate metrics over all accumulated songs
+        all_preds, all_labels = [], []
+        for data in vt_song_data.values():
+            all_preds.append(torch.tensor(data['pred_probs']).argmax(dim=-1).view(-1))
+            all_labels.append(torch.tensor(data['gt']).argmax(dim=-1).view(-1))
+        all_preds  = torch.cat(all_preds)
+        all_labels = torch.cat(all_labels)
+
+        total_acc, total_acc_masked = self.get_masked_acc(all_preds, all_labels, target_mask='Unknown')
+        per_class_acc          = self.get_per_class_acc(all_preds, all_labels)
+        per_class_f1, macro_f1 = self.get_per_class_f1(all_preds, all_labels, ignore_label='Unknown')
+
+        print(f"\n===== Version Test Summary ({len(vt_song_data)} songs, {len(vt_segment_results)} segments) =====")
+        print(f"  Acc: {total_acc:.4f}  Masked Acc: {total_acc_masked:.4f}  Macro F1: {macro_f1:.4f}")
+
+        # CSV + copy already-rendered posteriorgrams from fold dirs
+        out_dir = self.save_dir / 'version_test_summary'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if vt_segment_results:
+            pd.DataFrame(vt_segment_results).to_csv(out_dir / 'version_test_results.csv', index=False)
+        copied = 0
+        for src in vt_png_paths:
+            if src.exists():
+                shutil.copy2(src, out_dir / src.name)
+                copied += 1
+        print(f"  Copied {copied} posteriorgram PNGs → {out_dir}")
+
+        # Dedicated wandb summary run (same group as fold runs)
+        group = f'{self.config.dataset.name}_{self.config.train.selection}_{T}'
+        wandb.init(project='Pansori_Artist', name=f'version_test_summary_{T}',
+                   group=group, reinit=True)
+        wandb.config.update(OmegaConf.to_container(self.config))
+        wandb.log({
+            'VersionTest/Acc':        total_acc,
+            'VersionTest/Masked_Acc': total_acc_masked,
+            'VersionTest/Macro_F1':   macro_f1,
+            'VersionTest/n_songs':    len(vt_song_data),
+            'VersionTest/n_segments': len(vt_segment_results),
+            **{f'VersionTest/Acc_{k}': v for k, v in per_class_acc.items()},
+            **{f'VersionTest/F1_{k}':  v for k, v in per_class_f1.items()},
+        })
+        wandb.finish()
+
+
     def train(self):
         fold_best_acc = {}
         target_folds = self.config.train.get('target_folds', None)
 
         # Define selection
         selection = self.init_selection()
+
+        # Version test accumulation — only active for SongStratified
+        vt_hashes          = self._load_version_test_hashes() if self.config.train.selection == 'SongStratified' else set()
+        vt_song_data       = {}   # hash_key -> {gt, pred_probs, segments}
+        vt_segment_results = []   # flat list of per-segment dicts
+        vt_png_paths       = []   # Path objects of already-saved posteriorgram PNGs
+
+        CLASS_NAMES = {0: 'Unknown', 1: 'UJO', 2: 'GMJ', 3: 'ANR', 4: 'CJO'}
 
         # Start fold loop
         for fold, hash_keys in enumerate(selection, start=1):
@@ -510,7 +632,6 @@ class FrameTrainer(Trainer):
 
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0
-            patience_counter = 0
 
             # Get train-test split
             train_hash_keys, valid_hash_keys, test_hash_keys = self.split_train_valid_test(hash_keys)
@@ -538,24 +659,23 @@ class FrameTrainer(Trainer):
                         print(f"\n[Step {self.global_step}] Running evaluation...")
                         val_loss, val_acc, val_acc_masked, per_class_acc, per_class_f1, macro_f1, cm = self.evaluate(validset)
                         print(f"[Step {self.global_step}] Eval done. Val Masked Acc: {val_acc_masked:.4f}")
+
+                        self.scheduler.step(val_loss)
+                        current_lr = self.optimizer.param_groups[0]['lr']
+
                         wandb.log({"Valid/Loss": val_loss, "Valid/Acc": val_acc, "Valid/Masked Acc": val_acc_masked,
                                    "Valid/Macro F1": macro_f1,
+                                   "Train/LR": current_lr,
                                    **{f"Valid/Acc_{k}": v for k, v in per_class_acc.items()},
                                    **{f"Valid/F1_{k}": v for k, v in per_class_f1.items()},
                                    "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
-                        pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val Masked Acc: {val_acc_masked:.4f}")
+                        pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Val Loss: {val_loss:.4f}, Val Masked Acc: {val_acc_masked:.4f}, LR: {current_lr:.2e}")
 
                         if val_acc_masked > best_acc:
                             best_acc = val_acc_masked
                             best_iteration = self.global_step
-                            patience_counter = 0
                             torch.save(self.model.state_dict(), self.save_dir/f'fold{fold}_best_model.pt')
                             print(f"Epoch {current_epoch} with {len(self.dataset.training_instances)} segments, Best Acc {best_acc:.4f}")
-                        else:
-                            patience_counter += 1
-                            if self.early_stopping_patience and patience_counter >= self.early_stopping_patience:
-                                print(f"Early stopping at step {self.global_step} (no improvement for {patience_counter} evals)")
-                                self.global_step = self.num_iterations  # trigger outer while-loop exit
 
                     # Save checkpoints at specified intervals
                     if self.global_step % self.save_interval == 0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold}_{self.global_step}_iter.pt')
@@ -581,13 +701,47 @@ class FrameTrainer(Trainer):
             print(f"총 곡 수: {len(song_data)}, 총 segment 수: {len(segment_results)}")
             fold_best_acc[fold] = test_acc_masked
 
-            CLASS_NAMES = {0: 'Unknown', 1: 'UJO', 2: 'GMJ', 3: 'ANR', 4: 'CJO'}
             class_names = [CLASS_NAMES.get(i, str(i)) for i in range(testset.num_classes)]
+
+            # Accumulate version test results BEFORE save_posteriorgrams deletes gt/pred_probs
+            if vt_hashes:
+                for hk, data in song_data.items():
+                    if hk in vt_hashes:
+                        vt_song_data[hk] = {
+                            'gt':         data['gt'].copy(),
+                            'pred_probs': data['pred_probs'].copy(),
+                            'segments':   [dict(s) for s in data.get('segments', [])],
+                        }
+                vt_segment_results.extend(r for r in segment_results if r['song_name'] in vt_hashes)
+
+                # Write per-fold version test CSV to shared dir (for cross-process aggregation)
+                _vt_out_dir = self.config.train.get('vt_out_dir', None)
+                if _vt_out_dir:
+                    fold_vt = [r for r in segment_results if r['song_name'] in vt_hashes]
+                    if fold_vt:
+                        _vt_path = Path(_vt_out_dir)
+                        _vt_path.mkdir(parents=True, exist_ok=True)
+                        fold_label = fold_name if fold_name else str(fold)
+                        pd.DataFrame(fold_vt).to_csv(_vt_path / f'fold{fold_label}_vt.csv', index=False)
+                        print(f"  Version test CSV: {len(fold_vt)} segments → {_vt_path}/fold{fold_label}_vt.csv")
+
             fold_out_dir = self.save_dir / f'fold{fold}_posteriorgrams'
             fold_out_dir.mkdir(parents=True, exist_ok=True)
             if segment_results:
                 pd.DataFrame(segment_results).to_csv(fold_out_dir / 'test_results.csv', index=False)
             self.save_posteriorgrams(song_data, fold_out_dir, class_names)
+            self._save_hard_train_segments(train_hash_keys, fold_out_dir, class_names)
+
+            # Collect version test PNGs from this fold's output dir
+            if vt_hashes:
+                vt_png_paths.extend(
+                    p for p in fold_out_dir.glob('*.png')
+                    if p.stem.split('_')[0] in vt_hashes
+                )
+
+        # Version test summary across all folds
+        if vt_song_data:
+            self._log_version_test_summary(vt_song_data, vt_segment_results, vt_png_paths)
 
         if wandb.run is not None: wandb.finish()
 

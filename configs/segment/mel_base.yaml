@@ -59,9 +59,10 @@ train:
   eval_interval: 10
   save_interval: 1000
   random_seed: 42
-  selection: SharedFold   # SharedFold | KFold | Stratify | Artist | RandomSplit
+  selection: SharedFold   # SongStratified | SharedFold | KFold | Artist | RandomSplit | Version
   fold_dir: "/home/sangheon/Desktop/pansori_folds"  # shared 10-fold split files
   k_folds: 10
+  version_split_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_version_split"
 
 # Cross-validation parameters
 kfold:

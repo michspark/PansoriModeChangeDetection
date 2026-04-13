@@ -1298,7 +1298,6 @@ class PitchSegmentDataset(PitchDataset):
         return hash_key, contour, label
 
 
-
 class CMERTFrameDataset(AudioFrameDataset):
     def __init__(self,
                  data_dir,
@@ -1311,9 +1310,9 @@ class CMERTFrameDataset(AudioFrameDataset):
                  is_valid=False,
                  aug=False):
         super().__init__(data_dir, label_dir, num_classes, sr, channels, window, margin_ratio, is_valid, aug)
-        self.hop_length = 16000//50 # orig MERT hop_length
+        self.hop_length = 320  # MERT CNN hop (fixed at 320 samples regardless of sr → 75fps at 24kHz)
         self.len_window = self.sr * self.window
-        self.len_frames = int(window/(self.hop_length/sr) - 1)
+        self.len_frames = int(self.window / (self.hop_length / self.sr) - 1)  # 30/(320/24000)-1 = 2249
 
     def ms_to_frame(self, ms_label):
         ms_per_frame = self.hop_length / self.sr * 1000
@@ -1336,42 +1335,26 @@ class CMERTFrameDataset(AudioFrameDataset):
 
         return frame_label
 
-    def get_split(self, target_hash_keys, split='train'):
-        if split == 'train':
-            self.update_training_instances(target_hash_keys)
-        else:
-            return self.compose_validset(target_hash_keys)
-
-
-    def compose_validset(self, target_hash_keys):
-        validset = deepcopy(self)
-        validset.is_valid = True
-        validset.aug = False
-        validset.loaded_hash = [k for k in target_hash_keys if k in self.loaded_data]
-        validset.loaded_data = {k: self.loaded_data[k] for k in validset.loaded_hash}
-        validset.loaded_label = {k: self.loaded_label[k] for k in validset.loaded_hash}
-        validset.val_segments = self.prepare_val_segments(validset.loaded_hash)
-        return validset
-
-
-    def __len__(self):
-        if self.is_valid: return len(self.val_segments)
-        return len(self.training_instances)
-
-
     def __getitem__(self, idx):
+        window_samples = self.len_window
+
         if self.is_valid:
             hash_key, start, end = self.val_segments[idx]
             audio = self._load_audio(self.loaded_data[hash_key])
-            label_len = self.loaded_label[hash_key].shape[0] * self.sr // 1000
-            if end > label_len:
-                end = label_len
-                start = end - self.len_window
-            audio = audio[:, start:end].squeeze(0)
-            start_ms, end_ms = int(start/self.sr*1000), int(end/self.sr*1000)
+            audio_slice = audio[:, start:end]
+            if audio_slice.shape[1] < window_samples:
+                pad = window_samples - audio_slice.shape[1]
+                audio_slice = torch.nn.functional.pad(audio_slice, (0, pad))
+            start_ms, end_ms = int(start / self.sr * 1000), int(end / self.sr * 1000)
             ms_label = self.loaded_label[hash_key][start_ms:end_ms]
+            window_ms = self.window * 1000
+            if ms_label.shape[0] < window_ms:
+                pad_ms = window_ms - ms_label.shape[0]
+                pad = torch.zeros(pad_ms, self.num_classes)
+                pad[:, 0] = 1  # Unknown
+                ms_label = torch.cat([ms_label, pad], dim=0)
             frame_label = self.ms_to_frame(ms_label)
-            return hash_key, audio, frame_label
+            return hash_key, audio_slice.squeeze(0), frame_label
 
         hash_key = self.training_instances[idx]
 
@@ -1380,17 +1363,27 @@ class CMERTFrameDataset(AudioFrameDataset):
         else:
             audio = self._load_audio(self.loaded_data[hash_key])
 
-        start = random.randint(0, audio.shape[1] - self.len_window)
-        audio = audio[:, start:start + self.len_window].squeeze(0)
+        audio_length = audio.shape[1]
+        if audio_length > window_samples:
+            start = random.randint(0, audio_length - window_samples)
+        else:
+            start = 0
+        end = start + window_samples
 
-        start_ms = int(start / self.sr * 1000)
-        end_ms = int((start + self.len_window) / self.sr * 1000)
+        audio_slice = audio[:, start:end]
+        if audio_slice.shape[1] < window_samples:
+            audio_slice = torch.nn.functional.pad(audio_slice, (0, window_samples - audio_slice.shape[1]))
+
+        if self.aug: audio_slice = self.apply_audio_augmentation(audio_slice)
+
+        start_ms, end_ms = int(start / self.sr * 1000), int(end / self.sr * 1000)
         ms_label = self.loaded_label[hash_key][start_ms:end_ms]
-
-        if self.aug: audio = self.apply_audio_augmentation(audio)
-
+        window_ms = self.window * 1000
+        if ms_label.shape[0] < window_ms:
+            label_pad = torch.zeros(window_ms - ms_label.shape[0], self.num_classes)
+            label_pad[:, 0] = 1  # Unknown
+            ms_label = torch.cat([ms_label, label_pad], dim=0)
         frame_label = self.ms_to_frame(ms_label)
-        return hash_key, audio, frame_label
 
-
+        return hash_key, audio_slice.squeeze(0), frame_label
 

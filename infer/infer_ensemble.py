@@ -41,7 +41,7 @@ DEFAULT_RUN_DIR = {
     'mel':    'weights/frame/Mel_Original_Version',
     'pesto':  'weights/frame/Pesto_Version',
     'midi':   'weights/midi/MIDI_Version/23-43-24',
-    'cmert':  'weights/cmert/layer08_10k_version/layer08',
+    'cmert':  'weights/cmert/layer08_10k_version/layer08/0803_0024_Audio_Original_CMERTClassifier_CMERTFrameDataset',
     'cqt':    'weights/frame/CQT_Version',
     'chroma': 'weights/frame/Chroma_Version',
     'crepe':  'weights/frame/Crepe_Version',
@@ -97,7 +97,8 @@ def main():
             raise SystemExit(f"--{rep} expects {suffixes}, got {path.name}")
         model, cfg, ckpt = load_run(
             run_dir, args.device, args.fold,
-            fallback_config=Path(__file__).resolve().parents[1] / FALLBACK_CONFIG[rep])
+            fallback_config=Path(__file__).resolve().parents[1] / FALLBACK_CONFIG[rep],
+            rep=rep)
         feat = extractor(path, **feature_kwargs(rep, cfg.dataset.params))
         fps = fps_for(rep, cfg.dataset.params)
         win = window_frames_for(rep, cfg.dataset.params)

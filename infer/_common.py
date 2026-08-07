@@ -96,7 +96,7 @@ def default_device():
     return 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
-def load_run(run_dir, device, fold=None, fallback_config=None, config=None):
+def load_run(run_dir, device, fold=None, fallback_config=None, config=None, rep=None):
     """Load config.yaml + fold{N}_best_model.pt from a training run directory.
 
     Reading the config that sits next to the weights is what keeps inference
@@ -118,17 +118,31 @@ def load_run(run_dir, device, fold=None, fallback_config=None, config=None):
             cfg_path = Path(fallback_config)
             print(f"  note    : no config.yaml in {run_dir}, falling back to {cfg_path}")
         else:
-            raise FileNotFoundError(
-                f"No config.yaml in {run_dir} and no fallback. Point --run_dir at a "
-                f"training run directory, or pass --config explicitly.")
+            raise SystemExit(
+                f"\nNo config.yaml in {run_dir} and no fallback. Point --run_dir at a "
+                f"training run directory, or pass --config explicitly.\n")
     cfg = OmegaConf.load(cfg_path)
 
     ckpts = sorted(run_dir.glob('fold*_best_model.pt'))
     if fold is not None:
         ckpts = [p for p in ckpts if p.name == f'fold{fold}_best_model.pt']
     if not ckpts:
-        raise FileNotFoundError(f"No fold*_best_model.pt in {run_dir}"
-                                + (f" for fold {fold}" if fold else ""))
+        nested = sorted(run_dir.glob('*/fold*_best_model.pt'))
+        hint = ""
+        if nested:
+            # A common mistake: pointing at the experiment folder rather than one
+            # of the run folders inside it.
+            hint = ("\n  It looks like a parent of several run directories. Pick one:\n"
+                    + "\n".join(f"    {d}" for d in sorted({q.parent for q in nested})))
+        elif not run_dir.exists():
+            cfg_name = Path(FALLBACK_CONFIG[rep]).stem if rep in FALLBACK_CONFIG else '<config>'
+            hint = (f"\n  {run_dir} does not exist. No {rep or 'such'} checkpoint ships with "
+                    f"this repo — train one first:\n"
+                    f"    python train.py --config-name {cfg_name}\n"
+                    f"  then pass its run directory with --run_dir.")
+        raise SystemExit(
+            f"\nNo fold*_best_model.pt in {run_dir}"
+            + (f" for fold {fold}" if fold else "") + hint + "\n")
     ckpt = ckpts[0]
 
     model = getattr(models, cfg.model.name)(cfg.model.params).to(device)
@@ -154,10 +168,15 @@ def sliding_inference(model, feat, window_frames, device, sample_domain=False):
         if chunk.shape[1] < window_frames:
             chunk = torch.cat(
                 [chunk, torch.zeros(n_bins, window_frames - chunk.shape[1])], dim=1)
-        probs = torch.softmax(model(chunk.unsqueeze(0).to(device)), dim=-1)[0].cpu().numpy()
-        # In the sample domain (CMERT) the model emits far fewer frames than the
-        # window has samples, so `end - start` is not a frame count — keep the
-        # whole window's output and let the caller trim the total.
+        # Spectrogram-like features are (n_bins, T) and the model wants
+        # (batch, n_bins, T), so add a batch dim. CMERT's input is a raw waveform:
+        # CMERTFrameDataset yields `audio_slice.squeeze(0)`, i.e. (samples,), so a
+        # batch is (batch, samples) — and `chunk` is already exactly that shape.
+        x = chunk.to(device) if sample_domain else chunk.unsqueeze(0).to(device)
+        probs = torch.softmax(model(x), dim=-1)[0].cpu().numpy()
+        # In the sample domain the model emits far fewer frames than the window
+        # has samples, so `end - start` is not a frame count — keep the whole
+        # window's output and let the caller trim the total.
         out.append(probs if sample_domain else probs[:end - start])
     return np.concatenate(out, axis=0)
 
@@ -276,7 +295,7 @@ def run_single_representation(rep, args, _unused=None):
     extractor, suffixes = EXTRACTORS[rep]
     model, cfg, ckpt = load_run(args.run_dir, args.device, args.fold,
                                 fallback_config=REPO_ROOT / FALLBACK_CONFIG[rep],
-                                config=args.config)
+                                config=args.config, rep=rep)
     print(f"  model   : {cfg.model.name}  ({ckpt.relative_to(REPO_ROOT) if ckpt.is_relative_to(REPO_ROOT) else ckpt})")
     print(f"  dataset : {cfg.dataset.name}")
 

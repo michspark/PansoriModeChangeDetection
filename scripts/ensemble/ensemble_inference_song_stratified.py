@@ -155,8 +155,8 @@ def build_song_stratified_splits(song_strat_dir: Path) -> list[dict]:
     """
     Replicate the SongStratified fold generation from trainers.py.
     Returns list of 10 dicts with 'train', 'val', 'test' as FULL LINE lists
-    (e.g. '01ed19bb-06-김소희-춘향가_...'), mirroring ensemble_inference.py's
-    convention so that both hash-key lookup and MIDI name resolution work.
+    (e.g. '01ed19bb-06-김소희-춘향가_...'); the hash key is the prefix before the
+    first '-', which is how every modality is keyed.
     """
     halves = defaultdict(dict)
     for txt_file in sorted(song_strat_dir.glob('*.txt')):

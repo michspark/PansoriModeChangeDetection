@@ -15,5 +15,5 @@ from _common import build_parser, run_single_representation
 
 
 if __name__ == '__main__':
-    args = build_parser('cmert', 'weights/cmert/layer08_10k_version/layer08').parse_args()
+    args = build_parser('cmert', 'weights/cmert/layer08_10k_version/layer08/0803_0024_Audio_Original_CMERTClassifier_CMERTFrameDataset').parse_args()
     run_single_representation('cmert', args)

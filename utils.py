@@ -307,7 +307,8 @@ def save_test_csv(segment_results, csv_path):
     if not segment_results:
         return
     fieldnames = ['song_name', 'time_range', 'start_sec', 'end_sec',
-                  'loss', 'acc', 'f1_ujoh', 'f1_gyemyeon', 'f1_aniri', 'f1_changjo', 'f1_macro']
+                  'loss', 'acc', 'f1_ujoh', 'f1_gyemyeon', 'f1_aniri', 'f1_changjo', 'f1_macro',
+                  'prob_우조', 'prob_계면조', 'prob_아니리', 'prob_창조']
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

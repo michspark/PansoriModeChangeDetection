@@ -15,12 +15,13 @@ class BaseDataset(Dataset):
         "창조": 4
     }  # 0: no label
 
-    def __init__(self, data_dir, label_json, song_list=None, fs=100, window_size=30.0, is_train=True):
+    def __init__(self, data_dir, label_json, song_list=None, fs=100, window_size=30.0, is_train=True, snap_boundaries=True):
         self.data_dir = Path(data_dir)
         self.song_list = set(song_list) if song_list is not None else None
         self.fs = fs
         self.window_size = int(window_size * fs) # convert seconds to frames
         self.is_train = is_train
+        self.snap_boundaries = snap_boundaries
 
         with open(label_json, 'r', encoding='utf-8') as f:
             raw = json.load(f)
@@ -82,10 +83,15 @@ class BaseDataset(Dataset):
         return frame_label
 
     def prepare_val_segments(self):
-        """Creates non-overlapping segments, snapping boundaries to silence
-        so that notes active at a window boundary are not cut mid-note.
+        """Creates non-overlapping segments.
+
+        When snap_boundaries=True (default): snaps boundaries to silence so
+        that notes active at a window boundary are not cut mid-note.
         Searches within ±1 second of the target boundary for a silent frame.
         Falls back to the original boundary if no silence is found.
+
+        When snap_boundaries=False: uses exact 30-second (window_size) boundaries,
+        producing standard time ranges like 0-30s, 30-60s, 60-90s, ...
         """
         segments = []
         tolerance = self.fs  # 1 second in frames
@@ -98,7 +104,7 @@ class BaseDataset(Dataset):
                 target_end = start + self.window_size
                 if target_end >= total_frames:
                     break
-                if piano_roll[:, target_end].any():
+                if self.snap_boundaries and piano_roll[:, target_end].any():
                     # Search forward first (note ends soon after boundary)
                     snapped = None
                     for f in range(target_end + 1, min(total_frames, target_end + tolerance)):

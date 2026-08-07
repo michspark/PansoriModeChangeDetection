@@ -56,7 +56,7 @@ class Conv2DGRU(nn.Module):
         x = self.fc(x)
 
         return x
-    
+
 class Conv2DConformer(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -75,7 +75,7 @@ class Conv2DConformer(nn.Module):
             out_freq = config.num_bins // (2 ** config.num_layers)
         else:
             out_freq = config.num_bins
-        
+
         cnn_out_dim = self.params[-1]['output_channel'] * out_freq
 
         self.conformer = Conformer(
@@ -143,22 +143,16 @@ class Conv2DTCN(nn.Module):
 
         cnn_out_dim = self.params[-1]['output_channel'] * out_freq
 
-        # ----------------------------------------------------
-        # ★ 수정 1: Bi-GRU 대신 양방향 TCN 선언
-        # 3000 프레임을 여유 있게 커버하려면 레이어 5~6개 정도가 적당합니다.
-        num_tcn_layers = 6 
+        num_tcn_layers = 6
         tcn_channels = [self.hidden_dim] * num_tcn_layers
-        
+
         self.tcn = TemporalConvNet(
-            num_inputs=cnn_out_dim, 
-            num_channels=tcn_channels, 
+            num_inputs=cnn_out_dim,
+            num_channels=tcn_channels,
             kernel_size=3,  # 시간축 커널 사이즈 (반드시 홀수: 3, 5 등)
             dropout=self.dropout
         )
         # ----------------------------------------------------
-
-        # ★ 수정 2: Classifier에도 1D Conv 스무딩 적용 (선택 사항이나 강력히 추천)
-        # 0.5/0.5 떨림 현상을 마지막으로 한 번 더 잡아줍니다.
         self.fc = nn.Conv1d(self.hidden_dim, self.num_classes, kernel_size=5, padding=2)
 
     def build_enc(self):
@@ -186,13 +180,13 @@ class Conv2DTCN(nn.Module):
 
         # ----------------------------------------------------
         # ★ 수정 3: 차원 변경 후 TCN 통과
-        
+
         x = x.permute(0, 2, 1)   # 1D Conv를 위해 차원 변경: (Batch, Feature, Time)
-        
+
         x = self.tcn(x)          # 양방향 TCN 통과. 형태 유지: (Batch, Hidden, Time)
-        
+
         x = self.fc(x)           # Classifier 통과. (Batch, num_classes, Time)
-        
+
         x = x.permute(0, 2, 1)   # Loss 계산을 위해 원래대로 복구: (Batch, Time, num_classes)
         # ----------------------------------------------------
 

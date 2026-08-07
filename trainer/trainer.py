@@ -113,6 +113,9 @@ def run_test_epoch(loader, model, criterion, device, fs=100, window_size=3000):
             })
             
             seg_f1 = masked_f1(preds.cpu(), tgt.view(-1).cpu())
+            # Mean softmax probability per class over all frames in this segment
+            # Class order: [no_label=0, 우조=1, 계면조=2, 아니리=3, 창조=4]
+            mean_prob = pred_probs[0].cpu().numpy().mean(axis=0)  # (C,)
             segment_results.append({
                 'song_name': name,
                 'start_sec': f"{seg_start_sec:.1f}",
@@ -125,6 +128,10 @@ def run_test_epoch(loader, model, criterion, device, fs=100, window_size=3000):
                 'f1_aniri': round(seg_f1['f1_aniri'], 6),
                 'f1_changjo': round(seg_f1['f1_changjo'], 6),
                 'f1_macro': round(seg_f1['f1_macro'], 6),
+                'prob_우조': round(float(mean_prob[1]), 6),
+                'prob_계면조': round(float(mean_prob[2]), 6),
+                'prob_아니리': round(float(mean_prob[3]), 6),
+                'prob_창조': round(float(mean_prob[4]), 6),
             })
 
     for name in song_data:

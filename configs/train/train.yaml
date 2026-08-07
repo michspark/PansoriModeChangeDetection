@@ -1,11 +1,11 @@
 batch_size: 16
-train_mode: epoch   # "iteration" or "epoch"
+train_mode: iteration  # "iteration" or "epoch"
 num_iterations: 10000   # used when train_mode=iteration
 num_epoch: 150         # used when train_mode=epoch
 epoch_eval_interval: 1
 iter_eval_interval: 200
 save_interval: 1000     # steps (iteration mode) or epochs (epoch mode)
-lr: 1e-4
+lr: 5e-4
 
 scheduler:
   name: ReduceLROnPlateau  # ReduceLROnPlateau | CosineAnnealingLR | null

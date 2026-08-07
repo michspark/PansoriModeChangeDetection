@@ -8,7 +8,7 @@ dir:
 # "song_stratified" uses song_stratified/ (ch_1/ch_2/...) — 10 folds, 2 per genre
 # "random"          uses pre-existing fold_01.txt ~ fold_10.txt from random_fold_dir
 # "version"         uses pansori_version_split/train.txt|val.txt|test.txt — single fold
-split: song_stratified
+split: version
 
 fs: 10
 window_size: 30

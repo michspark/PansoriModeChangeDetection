@@ -86,6 +86,17 @@ class Trainer:
         self.eval_interval = config.train.get('eval_interval', 200)
         self.save_interval = config.train.get('save_interval', 1000)
         self.early_stopping_patience = config.train.get('early_stopping_patience', None)
+        # DataLoader worker count — lower it when host RAM is tight (each worker holds a dataset copy)
+        self.num_workers = config.train.get('num_workers', 8)
+        # Validation ran at batch 1 with no workers, which cost more wall time than
+        # the 200 training steps between evaluations. Default 1 keeps old behaviour.
+        self.eval_batch_size = config.train.get('eval_batch_size', 1)
+        # Evaluation runs *inside* the training loop, so the training loader's workers
+        # are still alive. Spawning 8 more here doubled peak RAM and got them OOM-killed.
+        self.eval_num_workers = config.train.get('eval_num_workers', 0)
+        # When False, skip every figure/PNG and the hard-train-segment re-inference pass.
+        # Metrics (loss/acc/F1) and the result CSVs are unaffected.
+        self.save_plots = config.train.get('save_plots', True)
 
         self.global_step = 0
         self.fold_names = None
@@ -102,12 +113,65 @@ class Trainer:
             self.hash_to_name = {}
 
 
+    def _resume_path(self, fold):
+        """Checkpoint path that survives restarts.
+
+        train.py creates a fresh timestamped run directory on every launch, so the
+        checkpoint must live one level above it — under the configured save_dir root.
+        """
+        return Path(self.config.dir.save_dir) / 'checkpoints' / f'fold{fold}_last.pt'
+
+    def _save_resume_checkpoint(self, fold, current_epoch, best_acc, best_iteration, best_model_state):
+        path = self._resume_path(fold)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            'global_step':    self.global_step,
+            'current_epoch':  current_epoch,
+            'best_acc':       best_acc,
+            'best_iteration': best_iteration,
+            'model':          self.model.state_dict(),
+            'optimizer':      self.optimizer.state_dict(),
+            'scheduler':      self.scheduler.state_dict(),
+            'best_model':     best_model_state,   # so the end-of-fold test load still works
+        }, path)
+
+    def _load_resume_checkpoint(self, fold):
+        """Restore training state for this fold. Returns None when there is nothing to resume."""
+        path = self._resume_path(fold)
+        if not self.config.train.get('auto_resume', False) or not path.exists():
+            return None
+
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(ckpt['model'])
+        self.optimizer.load_state_dict(ckpt['optimizer'])
+        self.scheduler.load_state_dict(ckpt['scheduler'])
+        self.global_step = ckpt['global_step']
+
+        # The best model lived in the previous run directory, which is gone — write it
+        # into the current one so the post-training test evaluation can load it.
+        if ckpt.get('best_model') is not None:
+            self.save_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(ckpt['best_model'], self.save_dir / f'fold{fold}_best_model.pt')
+
+        print(f"  Resumed fold {fold} from step {ckpt['global_step']} "
+              f"(best acc {ckpt['best_acc']:.4f} @ {ckpt['best_iteration']})")
+        return ckpt['current_epoch'], ckpt['best_acc'], ckpt['best_iteration'], ckpt.get('best_model')
+
+    def _clear_resume_checkpoint(self, fold):
+        path = self._resume_path(fold)
+        if path.exists():
+            path.unlink()
+            print(f"  Fold {fold} complete — removed {path.name}")
+
     def _hash_stem(self, hash_key):
         """Return '{filename}_{hash_key}' if a name is known, else just '{hash_key}'."""
         name = self.hash_to_name.get(hash_key, '')
         return f"{name}_{hash_key}" if name else hash_key
 
     def plot_confusion_matrix(self, output, y, class_names):
+        if not self.save_plots:
+            return None
+
         true_flat = y.reshape(-1).cpu().numpy()
         pred_flat = output.reshape(-1).cpu().numpy()
 
@@ -343,7 +407,8 @@ class FrameTrainer(Trainer):
 
     def evaluate(self, dataset):
         self.model.eval()
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+        dataloader = DataLoader(dataset, batch_size=self.eval_batch_size, shuffle=False,
+                                num_workers=self.eval_num_workers, pin_memory=True)
 
         total_loss = 0
         all_outputs, all_labels = [], []
@@ -355,15 +420,19 @@ class FrameTrainer(Trainer):
                 outputs = self.model(x)
                 if outputs.shape[1] != y.shape[1]: outputs = outputs[:, :y.shape[1]]
                 loss = self.criterion(outputs.permute(0,2,1), y.argmax(dim=-1))
-                total_loss += loss.item()
+                # Weight by batch size so valid_loss keeps the per-segment scale it had
+                # when this loader was hardcoded to batch_size=1.
+                total_loss += loss.item() * x.shape[0]
 
                 probs = torch.softmax(outputs, dim=-1).cpu().numpy()
                 outputs = torch.from_numpy(probs).to(self.device)
 
-                all_outputs.append(outputs.detach())
-                all_labels.append(y)
+                # Flatten per batch: concatenating on the time axis would break as soon
+                # as the final batch is smaller than the rest.
+                all_outputs.append(outputs.detach().argmax(dim=-1).view(-1))
+                all_labels.append(y.argmax(dim=-1).view(-1))
 
-        all_outputs, all_labels = torch.cat(all_outputs, dim=1).argmax(dim=-1).view(-1), torch.cat(all_labels, dim=1).argmax(dim=-1).view(-1)
+        all_outputs, all_labels = torch.cat(all_outputs), torch.cat(all_labels)
         valid_loss = total_loss / len(dataset)
         valid_acc, valid_acc_masked = self.get_masked_acc(all_outputs, all_labels, target_mask='Unknown')
         per_class_acc = self.get_per_class_acc(all_outputs, all_labels)
@@ -376,7 +445,9 @@ class FrameTrainer(Trainer):
     def evaluate_test(self, dataset):
         """Like evaluate(), but also collects per-song/per-segment GT and softmax probs."""
         self.model.eval()
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+        # batch_size stays 1: the per-song accumulation below indexes batch element 0.
+        dataloader = DataLoader(dataset, batch_size=1, shuffle=False,
+                                num_workers=self.eval_num_workers, pin_memory=True)
 
         # fps for converting frame/sample index to seconds
         if hasattr(dataset, 'frame_rate'):
@@ -445,6 +516,12 @@ class FrameTrainer(Trainer):
                 }
                 for cls_name, f1_val in seg_per_class_f1.items():
                     seg_result[f'f1_{cls_name}'] = round(f1_val, 6)
+                # Mean softmax probability per class over all frames in this segment
+                mean_prob = pred_probs[0].cpu().numpy().mean(axis=0)  # (C,)
+                inv_label_map = {v: k for k, v in self.dataset.label_map.items()
+                                 if k != 'Unknown' and v != self.dataset.label_map['Unknown']}
+                for cls_idx, cls_name in sorted(inv_label_map.items()):
+                    seg_result[f'prob_{cls_name}'] = round(float(mean_prob[cls_idx]), 6)
                 segment_results.append(seg_result)
 
         for sname in song_data:
@@ -485,20 +562,23 @@ class FrameTrainer(Trainer):
         for sname, data in song_data.items():
             stem = self._hash_stem(sname)
 
-            # Per-segment posteriorgrams
-            for seg in data.get('segments', []):
-                seg_label = f"{seg['start_sec']:.0f}-{seg['end_sec']:.0f}s"
-                title = f"{stem} [{seg_label}]"
-                fig = plot_posteriorgram(title, seg['gt'], seg['pred_probs'], class_names)
-                fig.savefig(out_dir / f"{stem}_{seg_label}.png", dpi=120, bbox_inches='tight')
+            if self.save_plots:
+                # Per-segment posteriorgrams
+                for seg in data.get('segments', []):
+                    seg_label = f"{seg['start_sec']:.0f}-{seg['end_sec']:.0f}s"
+                    title = f"{stem} [{seg_label}]"
+                    fig = plot_posteriorgram(title, seg['gt'], seg['pred_probs'], class_names)
+                    fig.savefig(out_dir / f"{stem}_{seg_label}.png", dpi=120, bbox_inches='tight')
+                    fig.clf()
+                    plt.close(fig)
+
+                # Full song posteriorgram
+                fig = plot_posteriorgram(stem, data['gt'], data['pred_probs'], class_names)
+                fig.savefig(out_dir / f"{stem}_full.png", dpi=120, bbox_inches='tight')
                 fig.clf()
                 plt.close(fig)
 
-            # Full song posteriorgram
-            fig = plot_posteriorgram(stem, data['gt'], data['pred_probs'], class_names)
-            fig.savefig(out_dir / f"{stem}_full.png", dpi=120, bbox_inches='tight')
-            fig.clf()
-            plt.close(fig)
+            # Freed regardless of plotting — these arrays dominate this dict's memory
             del data['gt'], data['pred_probs']
 
         plt.close('all')
@@ -507,6 +587,12 @@ class FrameTrainer(Trainer):
 
     def _save_hard_train_segments(self, train_hash_keys, out_dir, class_names, top_n=30):
         """Run best-model inference on train split; save top-N highest-loss segments as CSV + posteriorgrams."""
+        if not self.save_plots:
+            # This is a diagnostic pass only — it re-runs inference over the whole train
+            # split, which costs more than the test evaluation itself.
+            print("  Hard-train-segment analysis skipped (train.save_plots=False)")
+            return
+
         print(f"  Hard-train-segment analysis ({len(train_hash_keys)} train songs)...")
         hard_trainset = self.dataset.get_split(train_hash_keys, split='test')
         _, _, _, _, _, _, _, train_song_data, train_seg_results = self.evaluate_test(hard_trainset)
@@ -632,6 +718,12 @@ class FrameTrainer(Trainer):
 
             self.global_step, current_epoch = 0, 0
             best_acc, best_iteration = 0, 0
+            best_model_state = None
+
+            # Pick up where an interrupted run left off (train.auto_resume)
+            resumed = self._load_resume_checkpoint(fold)
+            if resumed is not None:
+                current_epoch, best_acc, best_iteration, best_model_state = resumed
 
             # Get train-test split
             train_hash_keys, valid_hash_keys, test_hash_keys = self.split_train_valid_test(hash_keys)
@@ -639,10 +731,10 @@ class FrameTrainer(Trainer):
             validset = self.dataset.get_split(valid_hash_keys, split='valid')
             testset = self.dataset.get_split(test_hash_keys, split='test')
             print('Trainset:', len(train_hash_keys), 'Validset:', len(valid_hash_keys), 'Testset:', len(test_hash_keys))
-            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=16, pin_memory=True)
+            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, pin_memory=True)
 
             # Start iter loop
-            pbar = tqdm(total=self.num_iterations, desc=f"Fold {fold}")
+            pbar = tqdm(total=self.num_iterations, initial=self.global_step, desc=f"Fold {fold}")
             while self.global_step < self.num_iterations:
                 # Forward
                 for batch in train_loader:
@@ -668,14 +760,20 @@ class FrameTrainer(Trainer):
                                    "Train/LR": current_lr,
                                    **{f"Valid/Acc_{k}": v for k, v in per_class_acc.items()},
                                    **{f"Valid/F1_{k}": v for k, v in per_class_f1.items()},
-                                   "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+                                   **({"Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))} if cm is not None else {})}, step=self.global_step)
                         pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Val Loss: {val_loss:.4f}, Val Masked Acc: {val_acc_masked:.4f}, LR: {current_lr:.2e}")
 
                         if val_acc_masked > best_acc:
                             best_acc = val_acc_masked
                             best_iteration = self.global_step
-                            torch.save(self.model.state_dict(), self.save_dir/f'fold{fold}_best_model.pt')
+                            best_model_state = deepcopy(self.model.state_dict())
+                            torch.save(best_model_state, self.save_dir/f'fold{fold}_best_model.pt')
                             print(f"Epoch {current_epoch} with {len(self.dataset.training_instances)} segments, Best Acc {best_acc:.4f}")
+
+                        # Resume point — written after every evaluation so a crash costs
+                        # at most one eval interval of training.
+                        if self.config.train.get('auto_resume', False):
+                            self._save_resume_checkpoint(fold, current_epoch, best_acc, best_iteration, best_model_state)
 
                     # Save checkpoints at specified intervals
                     if self.global_step % self.save_interval == 0: torch.save(self.model.state_dict(), self.save_dir / f'fold{fold}_{self.global_step}_iter.pt')
@@ -695,11 +793,35 @@ class FrameTrainer(Trainer):
                        "Test/Macro F1": macro_f1,
                        **{f"Test/Acc_{k}": v for k, v in per_class_acc.items()},
                        **{f"Test/F1_{k}": v for k, v in per_class_f1.items()},
-                       "Test Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+                       **({"Test Confusion Matrix": wandb.Image(Image.fromarray(cm))} if cm is not None else {})}, step=self.global_step)
             print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test Masked Acc: {test_acc_masked:.4f}")
             print(f"Per-class Acc: { {k: f'{v:.4f}' for k, v in per_class_acc.items()} }")
             print(f"총 곡 수: {len(song_data)}, 총 segment 수: {len(segment_results)}")
             fold_best_acc[fold] = test_acc_masked
+
+            # Persist test metrics (incl. per-class F1) one level above the timestamped
+            # run dir, so every fold of a multi-process run collects in one place.
+            metrics_dir = Path(self.config.dir.save_dir) / 'test_metrics'
+            metrics_dir.mkdir(parents=True, exist_ok=True)
+            metrics_row = {
+                'fold':                fold,
+                'fold_name':           fold_name if fold_name else str(fold),
+                'layer_index':         self.config.model.params.get('layer_index', None),
+                'num_iterations':      self.num_iterations,
+                'best_iteration':      best_iteration,
+                'best_val_masked_acc': best_acc,
+                'test_loss':           test_loss,
+                'test_acc':            test_acc,
+                'test_masked_acc':     test_acc_masked,
+                'test_macro_f1':       macro_f1,
+                **{f'test_acc_{k}': v for k, v in per_class_acc.items()},
+                **{f'test_f1_{k}':  v for k, v in per_class_f1.items()},
+                'n_songs':             len(song_data),
+                'n_segments':          len(segment_results),
+                'run_dir':             self.save_dir.name,
+            }
+            pd.DataFrame([metrics_row]).to_csv(metrics_dir / f'fold{fold}_test_metrics.csv', index=False)
+            print(f"  Test metrics → {metrics_dir}/fold{fold}_test_metrics.csv")
 
             class_names = [CLASS_NAMES.get(i, str(i)) for i in range(testset.num_classes)]
 
@@ -731,6 +853,9 @@ class FrameTrainer(Trainer):
                 pd.DataFrame(segment_results).to_csv(fold_out_dir / 'test_results.csv', index=False)
             self.save_posteriorgrams(song_data, fold_out_dir, class_names)
             self._save_hard_train_segments(train_hash_keys, fold_out_dir, class_names)
+
+            # Fold finished — drop its resume point so a rerun starts this fold clean
+            self._clear_resume_checkpoint(fold)
 
             # Collect version test PNGs from this fold's output dir
             if vt_hashes:
@@ -810,9 +935,9 @@ class SegmentTrainer(Trainer):
             self.dataset.get_split(train_hash_keys, split='train')
             print('Trainset:', len(train_hash_keys), 'Validset:', len(valid_hash_keys), 'Testset:', len(test_hash_keys))
 
-            valid_loader = DataLoader(validset, batch_size=self.batch_size, shuffle=False, num_workers=8, pin_memory=True)
-            test_loader = DataLoader(testset, batch_size=self.batch_size, shuffle=False, num_workers=8, pin_memory=True)
-            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=16, pin_memory=True)
+            valid_loader = DataLoader(validset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, pin_memory=True)
+            test_loader = DataLoader(testset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, pin_memory=True)
+            train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, pin_memory=True)
             train_iter = iter(train_loader)
 
             # Start iter loop
@@ -840,7 +965,7 @@ class SegmentTrainer(Trainer):
                     wandb.log({"Valid/Loss": val_loss, "Valid/Acc": val_acc, "Valid/Masked Acc": val_acc_masked,
                                "Valid/Macro F1": macro_f1,
                                **{f"Valid/F1_{k}": v for k, v in per_class_f1.items()},
-                               "Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+                               **({"Valid Confusion Matrix": wandb.Image(Image.fromarray(cm))} if cm is not None else {})}, step=self.global_step)
                     pbar.set_description(f"Fold {fold} | Iter {self.global_step}/{self.num_iterations} | Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val Masked Acc: {val_acc_masked:.4f}")
 
                     if val_acc_masked > best_acc:
@@ -863,7 +988,7 @@ class SegmentTrainer(Trainer):
             wandb.log({"Test/Loss": test_loss, "Test/Acc": test_acc, "Test/Masked Acc": test_acc_masked,
                        "Test/Macro F1": macro_f1,
                        **{f"Test/F1_{k}": v for k, v in per_class_f1.items()},
-                       "Test Confusion Matrix": wandb.Image(Image.fromarray(cm))}, step=self.global_step)
+                       **({"Test Confusion Matrix": wandb.Image(Image.fromarray(cm))} if cm is not None else {})}, step=self.global_step)
             print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test Masked Acc: {test_acc_masked:.4f}")
 
             fold_best_acc[fold] = test_acc_masked

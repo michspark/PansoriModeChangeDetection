@@ -2,10 +2,16 @@ hydra:
   run:
     dir: .
 
+# Root of the Pansori corpus (audio + fold-split index files). Lives OUTSIDE
+# this repo; the corpus is not distributed with the code.
+#   export PANSORI_DATA_ROOT=/path/to/Pansori_Data
+paths:
+  data_root: ${oc.env:PANSORI_DATA_ROOT,../Pansori_Data}
+
 # Data sources
 data:
-  data_dir: "/home/sangheon/Desktop/Pansori_Data/Audio"
-  label_dir: "/home/sangheon/Desktop/PansoriModeChangeDetection/data/Label"
+  data_dir: "${paths.data_root}/Audio_Original"
+  label_dir: "data/Label"
 
 
 # Dataset configuration
@@ -26,6 +32,7 @@ model:
   # name: "CMERTConv1DEnc"
   # name: "CMERTConv1DGRU"
   params:
+    layer_index: 12   # which MERT transformer layer to read features from (1..12)
     embed_dims: 512
     num_classes: ${dataset.params.num_classes}
 
@@ -49,23 +56,32 @@ model:
 loss:
   name: FocalLoss # If alpha=1 gamma=0: FocalLoss -> CrossEntropyLoss
   params:
-    alpha: 1
-    gamma: 0 # 1.0
+    gamma: 2.0
     ignore_index: 0
+    weights:
+    - 0.3
+    - 3.0
+    - 1.0
+    - 1.5
+    - 3.0
 
 # Training parameters
 train:
   trainer: "FrameTrainer"
   lr: 3e-4
   batch_size: 8
-  num_iterations: 5000
+  num_iterations: 10000
   eval_interval: 200
   save_interval: 25000
   random_seed: 42
+  num_workers: 8      # 8 keeps the GPU fed (data prep 400ms/batch vs 540ms GPU step)
+  eval_batch_size: 4  # validation was batch 1 + 0 workers and took longer than training
+  save_plots: False   # skip posteriorgram PNGs, confusion matrices, hard-train-segment pass
+  auto_resume: True   # save/restore full training state so a killed run continues mid-fold
   selection: Version # KFold # Artist # Stratify
-  shared_fold_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_random_fold" # shared 10-fold split files
-  song_stratified_dir: "/home/sangheon/Desktop/Pansori_Data/song_stratified"
-  version_split_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_version_split"
+  shared_fold_dir: "${paths.data_root}/pansori_random_fold" # shared 10-fold split files
+  song_stratified_dir: "${paths.data_root}/song_stratified"
+  version_split_dir: "${paths.data_root}/pansori_version_split"
   k_folds: 10
   target_folds: null  # e.g. [1] or [1,2,3] to run only specific folds; null = run all
 
@@ -75,8 +91,6 @@ kfold:
   n_splits: 5
   shuffle: True
   random_state: ${train.random_seed}
-
-stratify: "/home/jinin/userdata/PansoriModeChangeDetection/data/Stratify/stratify.csv"
 
 
 # Directory paths

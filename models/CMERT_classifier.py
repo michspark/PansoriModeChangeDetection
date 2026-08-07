@@ -9,10 +9,26 @@ class CMERTClassifier(nn.Module):
         self.processor = Wav2Vec2FeatureExtractor.from_pretrained("ntua-slp/CultureMERT-95M", trust_remote_code=True)
         self.cmert = AutoModel.from_pretrained("ntua-slp/CultureMERT-95M", trust_remote_code=True)
 
+        # Which transformer layer's output to use as features (1..12). 12 = original behavior.
+        self.layer_index = config.get('layer_index', 12)
+        num_layers = len(self.cmert.encoder.layers)
+        assert 1 <= self.layer_index <= num_layers, f"layer_index must be 1..{num_layers}"
+
+        # Drop the layers above layer_index — saves forward compute/VRAM and makes
+        # last_hidden_state exactly the output of layer `layer_index`.
+        if self.layer_index < num_layers:
+            self.cmert.encoder.layers = self.cmert.encoder.layers[:self.layer_index]
+
+        # Remove training-time stochasticity so the only difference across ablation runs
+        # is which layer we read from. encoder.config is the same object as cmert.config.
+        self.cmert.config.layerdrop = 0.0
+        self.cmert.config.apply_spec_augment = False
+
         for param in self.cmert.parameters():
             param.requires_grad = False
         # for param in self.cmert.feature_extractor.parameters():
         #     param.requires_grad = True
+        # After truncation layers[-1] is layer `layer_index` — we fine-tune the layer we read from.
         for param in self.cmert.encoder.layers[-1].parameters():
             param.requires_grad = True
 

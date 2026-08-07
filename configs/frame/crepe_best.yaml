@@ -2,10 +2,16 @@ hydra:
   run:
     dir: .
 
+# Root of the Pansori corpus (audio + fold-split index files). Lives OUTSIDE
+# this repo; the corpus is not distributed with the code.
+#   export PANSORI_DATA_ROOT=/path/to/Pansori_Data
+paths:
+  data_root: ${oc.env:PANSORI_DATA_ROOT,../Pansori_Data}
+
 # Data sources
 data:
-  data_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/CrepePitch"
-  label_dir: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Label"
+  data_dir: "${paths.data_root}/crepe"
+  label_dir: "data/Label"
 
 # Dataset configuration
 dataset:
@@ -58,15 +64,13 @@ train:
   random_seed: 42
   selection: SongStratified # Artist # KFold
   target_folds: null  # e.g. [1] or [1,2,3] to run only specific folds; null = run all
-  version_split_dir: "/home/sangheon/Desktop/Pansori_Data/pansori_version_split"
+  version_split_dir: "${paths.data_root}/pansori_version_split"
 
 # Cross-validation parameters
 kfold:
   n_splits: 5
   shuffle: True
   random_state: ${train.random_seed}
-
-stratify: "/home/jinin/userdata/Pansori_2025_ISMIR/data/Stratify/stratify.csv"
 
 # Directory paths
 dir:

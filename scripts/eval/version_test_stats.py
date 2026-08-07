@@ -4,9 +4,9 @@ version_test_stats.py
 주어진 version test CSV 파일의 GT-present 기반 통계를 출력합니다.
 
 사용법:
-    python version_test_stats.py <csv_path> [<csv_path2> ...]
-    python version_test_stats.py weights/frame/0411MelVersionTest/test_results.csv
-    python version_test_stats.py results_a.csv results_b.csv results_c.csv
+    python scripts/eval/version_test_stats.py <csv_path> [<csv_path2> ...]
+    python scripts/eval/version_test_stats.py weights/frame/0411MelVersionTest/test_results.csv
+    python scripts/eval/version_test_stats.py results_a.csv results_b.csv results_c.csv
 
 지원 포맷:
     - 한글 컬럼: f1_우조, f1_계면조, f1_아니리, f1_창조  (PansoriModeChangeDetection)
@@ -18,11 +18,16 @@ song_name 컬럼:
 """
 
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from paths import REPO_ROOT
+
+import sys
 import argparse
 import pandas as pd
 from pathlib import Path
 
-LABEL_CSV = Path("/home/sangheon/Desktop/PansoriModeChangeDetection/data/Label/label.csv")
+LABEL_CSV = REPO_ROOT / 'data/Label/label.csv'
 
 # 한글 클래스명 → 각 포맷의 컬럼명 매핑
 COL_VARIANTS = {

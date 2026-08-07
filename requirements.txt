@@ -1,3 +1,18 @@
+# ---------------------------------------------------------------------------
+# PansoriModeChangeDetection
+#
+# PyTorch is pinned to a CUDA 11.8 build. A bare `pip install -r
+# requirements.txt` will NOT resolve it -- install with:
+#
+#   pip install -r requirements.txt \
+#       --index-url https://download.pytorch.org/whl/cu118 \
+#       --extra-index-url https://pypi.org/simple
+#
+# For CPU-only use, drop the +cu118 suffix from the torch/torchaudio/
+# torchvision pins below and install from PyPI normally.
+# ---------------------------------------------------------------------------
+
+# --- core training pipeline -------------------------------------------------
 annotated-types==0.7.0
 antlr4-python3-runtime==4.9.3
 audioread==3.0.1
@@ -76,3 +91,29 @@ typing_extensions==4.12.2
 tzdata==2025.2
 urllib3==2.3.0
 wandb==0.19.8
+
+# --- audio feature frontends ------------------------------------------------
+nnAudio==0.3.4              # datasets.py: CQT frontend (CQTFrameDataset)
+
+# --- CultureMERT backbone ---------------------------------------------------
+transformers==4.57.3        # models/CMERT_classifier.py: ntua-slp/CultureMERT-95M
+huggingface-hub==0.36.0
+tokenizers==0.22.1
+safetensors==0.7.0
+
+# --- analysis / figure scripts ----------------------------------------------
+# NOTE: `import pesto` is provided by the PyPI package `pesto-pitch`, NOT `pesto`.
+pesto-pitch==2.0.1          # scripts/analysis/contour_visualization.py
+pretty_midi==0.2.11         # scripts/figures/make_pattern_figure.py
+
+# --- optional: data preprocessing -------------------------------------------
+# Only needed to regenerate the pitch-shifted augmentation corpus.
+torch-pitch-shift           # preproc/make_pitch_shift.py
+
+# --- optional: posteriorgram viewer -----------------------------------------
+# Only needed for `bash viewer/run.sh`.
+fastapi                     # viewer/app.py
+uvicorn                     # viewer/app.py
+
+# --- optional: notebooks ----------------------------------------------------
+ipython                     # notebooks/

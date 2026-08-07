@@ -1,3 +1,8 @@
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from paths import REPO_ROOT
 #!/usr/bin/env python3
 """
 Script to add hash values to audio filenames based on matching prefixes.
@@ -122,7 +127,7 @@ def rename_files_with_hash(directory_path, dry_run=True):
 
 if __name__ == "__main__":
     # Configuration
-    AUDIO_DIR = "/home/sangheon/Desktop/PansoriModeChangeDetection/data/audio"
+    AUDIO_DIR = str(REPO_ROOT / 'data/audio')
 
     # Run in dry-run mode first to preview changes
     print("Running in DRY RUN mode to preview changes...\n")

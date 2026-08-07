@@ -88,6 +88,13 @@ class BaseDataset(Dataset):
 
 
 class AudioDataset(BaseDataset):
+    # One-entry decode cache, used only on validation/test splits. prepare_val_segments
+    # emits every 30s window of a song back to back and the eval loaders use
+    # shuffle=False, so the same file was being fully decoded once per window
+    # (~20x per song). Holding the last decode costs one song of memory (~35MB).
+    _cached_audio_file = None
+    _cached_audio = None
+
     def __init__(self, data_dir, label_dir, num_classes=4, sr=16000, channels='mono', window=20, margin_ratio=1.0, is_valid=False, aug=False):
         super().__init__(data_dir, label_dir, num_classes, sr, window, margin_ratio, is_valid, aug)
         self.channels = channels
@@ -97,10 +104,19 @@ class AudioDataset(BaseDataset):
 
 
     def _load_audio(self, audio_file):
+        # Training draws a random song each time, so caching there would only cost
+        # memory in every worker. Validation/test are sequential — cache those.
+        if self.is_valid and self._cached_audio_file == audio_file:
+            return self._cached_audio
+
         data, sr = sf.read(audio_file, dtype='float32', always_2d=True)
         audio = torch.from_numpy(data.T)  # (channels, samples)
         audio = torchaudio.functional.resample(audio, orig_freq=sr, new_freq=self.sr) if self.sr!=sr else audio
         audio = audio.mean(dim=0, keepdim=True) if self.channels=='mono' else audio
+
+        if self.is_valid:
+            self._cached_audio_file = audio_file
+            self._cached_audio = audio
         return audio
 
 

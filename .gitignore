@@ -1,30 +1,56 @@
+# NOTE: .gitignore has no trailing-comment support -- a comment must be on its
+# own line, or it becomes part of the pattern and the rule silently stops working.
+
+# ── Experiment outputs (large, regenerable) ───────────────────────────────────
+# trained checkpoints
+weights/
+# W&B run cache
+wandb/
+# per-run CSV/NPZ/summary artifacts
+outputs/
+# run_analysis_categorize.py output (audio + posteriorgrams)
+analysis/
+# run_analysis_simple.py output
+analysis_simple/
+# viewer inference cache
+viewer/cache/
+# hydra run snapshot (hydra.run.dir is '.')
+.hydra/
+*.log
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# ── Environments / editors ────────────────────────────────────────────────────
+pansori_venv/
+.venv/
+venv/
+.vscode/
+.idea/
 .DS_Store
 *.DS_Store
 
-__pycache__/
-.vscode/
-*.pyc
-
-pansori_venv/
-
-weights/
-.hydra/
-train/
-wandb/
-
-*.log
-*.wav
-*.mp3
-*.csv
-*.ipynb
-*.sh
-
-
+# ── Corpus lives outside the repo (see PANSORI_DATA_ROOT in the README) ───────
 Audio/
 PestoPitch/
 CrepePitch/
 SeparatedAudio/
 PitchShiftedAudio/
+difficult_segments_collection/
 
-prv_py/
-notebooks/
+# Audio is never committed, except the two clips the figure scripts need.
+*.wav
+*.mp3
+!assets/audio/*.wav
+
+# ── Regenerable figures at the repo root ──────────────────────────────────────
+/*.png
+/*.pdf
+
+# NOTE: *.sh, *.csv, *.ipynb and notebooks/ were previously ignored wholesale,
+# which hid every run script, the label CSV, and both notebooks from the repo.
+# They are tracked now; add narrow rules here instead of blanket extensions.

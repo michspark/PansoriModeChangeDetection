@@ -1,0 +1,96 @@
+hydra:
+  run:
+    dir: .
+
+# Root of the Pansori corpus (audio + fold-split index files). Lives OUTSIDE
+# this repo; the corpus is not distributed with the code.
+#   export PANSORI_DATA_ROOT=/path/to/Pansori_Data
+paths:
+  data_root: ${oc.env:PANSORI_DATA_ROOT,../Pansori_Data}
+
+# Data sources
+# rosvot_midi holds one transcribed .mid per recording, hash-key prefixed like
+# the audio dirs, so the shared split files address MIDI songs unchanged.
+data:
+  data_dir: "${paths.data_root}/rosvot_midi"
+  label_dir: "data/Label"
+
+# Dataset configuration
+dataset:
+  name: "MidiFrameDataset"
+  params:
+    num_classes: 5
+    fs: 10          # piano roll frame rate -> 30s window = 300 frames
+    window: 30
+    aug: True       # MIDI-specific: pitch_shift (+/-3 semitones) + time_masking
+
+# Model
+# Hyperparameters carried over from PansoriMIDIDetection so its existing
+# checkpoints load with strict=True. NOTE: pool_size/dilation are strings here
+# because models/Conv2DGRU.py eval()s them -- that is this repo's convention.
+model:
+  name: "Conv2DGRU"
+  params:
+    num_layers: 4
+    in_channels: 1
+    num_bins: 128           # piano roll pitches; 128 // 2^4 = 8 after pooling
+
+    last_hidden_dim: 64
+    use_gradual_size: True
+
+    kernel_size: [3, 5]     # non-square: 3 along pitch, 5 along time
+    pool_size: (2,1)
+    dilation: (1,1)
+    cnn_dropout: 0.1
+
+    num_gru: 2
+    hidden_dim: 256
+    dropout: 0.4
+    num_classes: 5
+
+# Loss params
+loss:
+  name: FocalLoss # If alpha=1 gamma=0: FocalLoss -> CrossEntropyLoss
+  params:
+    gamma: 2.0
+    ignore_index: 0
+    weights:
+    - 0.3
+    - 3.0
+    - 1.0
+    - 1.5
+    - 3.0
+
+# Training parameters
+train:
+  trainer: "FrameTrainer"
+  lr: 5e-4
+  batch_size: 16
+  num_iterations: 10000
+  eval_interval: 200
+  save_interval: 1000
+  lr_scheduler:
+    factor: 0.5
+    patience: 10
+    min_lr: 1e-6
+  random_seed: 42
+  selection: Version   # SongStratified | SharedFold | KFold | Artist | RandomSplit | Version
+
+  shared_fold_dir: "${paths.data_root}/pansori_random_fold" # shared 10-fold split files
+  song_stratified_dir: "${paths.data_root}/song_stratified"
+  version_split_dir: "${paths.data_root}/pansori_version_split"
+  k_folds: 10
+  target_folds: [1,2]  # e.g. [1] or [1,2,3] to run only specific folds; null = run all
+
+# Cross-validation parameters
+kfold:
+  n_splits: 10
+  shuffle: True
+  random_state: ${train.random_seed}
+
+filter:
+  sigma: 5
+
+# Directory paths
+dir:
+  save_dir: "weights/frame"

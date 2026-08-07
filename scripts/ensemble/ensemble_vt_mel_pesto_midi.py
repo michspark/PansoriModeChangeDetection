@@ -32,7 +32,6 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 REPO_FRAME = REPO_ROOT
-REPO_MIDI  = REPO_FRAME.parent / 'PansoriMIDIDetection'
 
 sys.path.insert(0, str(REPO_FRAME))
 import models as frame_models
@@ -40,7 +39,7 @@ import datasets as frame_datasets
 
 MEL_DIR   = REPO_FRAME / 'weights/frame/Mel_Original_Version'
 PESTO_DIR = REPO_FRAME / 'weights/frame/Pesto_Version'
-MIDI_DIR  = REPO_MIDI  / 'outputs/MIDI_Version/23-43-24'
+MIDI_DIR  = REPO_FRAME / 'weights/midi/MIDI_Version/23-43-24'
 
 VERSION_SPLIT = DATA_ROOT / 'pansori_version_split'
 
@@ -61,9 +60,7 @@ WINDOW_SEC = 30
 
 def load_version_test_hashes():
     lines = [l.strip() for l in (VERSION_SPLIT / 'test.txt').read_text('utf-8').splitlines() if l.strip()]
-    hash_keys  = [l.split('-')[0] for l in lines]
-    midi_names = [l + '_vocal.mid' for l in lines]
-    return hash_keys, midi_names
+    return [l.split('-')[0] for l in lines]
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────
@@ -78,35 +75,13 @@ def load_frame_model(model_dir: Path, device: str):
     return model, cfg
 
 
-def _evict_and_restore(fn):
-    """Decorator: temporarily evicts frame 'models'/'datasets' from sys.modules."""
-    def wrapper(*args, **kwargs):
-        _evicted = {k: v for k, v in sys.modules.items()
-                    if k in ('models', 'datasets')
-                    or k.startswith('models.') or k.startswith('datasets.')}
-        for k in _evicted:
-            del sys.modules[k]
-        sys.path.insert(0, str(REPO_MIDI))
-        try:
-            result = fn(*args, **kwargs)
-        finally:
-            sys.path.pop(0)
-            for k in list(sys.modules.keys()):
-                if k in ('models', 'datasets') \
-                        or k.startswith('models.') or k.startswith('datasets.'):
-                    del sys.modules[k]
-            sys.modules.update(_evicted)
-        return result
-    return wrapper
-
-
-@_evict_and_restore
 def load_midi_model(midi_dir: Path, device: str):
-    from models.model_zoo import Conv2DGRU as MidiConv2DGRU
-
-    cfg = OmegaConf.load(midi_dir / '.hydra' / 'config.yaml')
-    model = MidiConv2DGRU(cfg.model).to(device)
-    state = torch.load(midi_dir / 'best_model_fold1.pt', map_location=device)
+    # Use this repo's midi.yaml, not midi_dir/.hydra/config.yaml: the old
+    # snapshot encodes pool_size/dilation as lists, and this repo's Conv2DGRU
+    # eval()s them as strings. The weights themselves load either way.
+    cfg = OmegaConf.load(REPO_FRAME / 'configs/frame/midi.yaml')
+    model = frame_models.Conv2DGRU(cfg.model.params).to(device)
+    state = torch.load(midi_dir / 'fold1_best_model.pt', map_location=device, weights_only=True)
     state = {k.replace('module.', ''): v for k, v in state.items()}
     model.load_state_dict(state)
     model.eval()
@@ -128,23 +103,10 @@ def load_frame_dataset(cfg, test_hash_keys):
     return ds
 
 
-@_evict_and_restore
-def load_midi_dataset(midi_cfg, midi_names):
-    from datasets.dataset import BaseDataset
-
-    data_cfg = midi_cfg.data
-    ds = BaseDataset(
-        data_dir=data_cfg.dir.midi_dir,
-        label_json=data_cfg.dir.label_path,
-        song_list=set(midi_names),
-        fs=data_cfg.fs,
-        window_size=data_cfg.window_size,
-        is_train=False,
-        snap_boundaries=False,
-    )
-    hash_to_idx = {item['song_name'].split('-')[0]: idx
-                   for idx, item in enumerate(ds.memory_cache)}
-    return ds, hash_to_idx, int(data_cfg.fs)
+def load_midi_dataset(midi_cfg, test_hash_keys):
+    """MidiFrameDataset is hash-keyed, so the generic loader above covers it."""
+    ds = load_frame_dataset(midi_cfg, test_hash_keys)
+    return ds, int(midi_cfg.dataset.params.fs)
 
 
 # ── Full-song inference ───────────────────────────────────────────────────────
@@ -222,7 +184,7 @@ def main():
     print(f"Device  : {DEV}")
 
     # Test split
-    test_hashes, midi_names = load_version_test_hashes()
+    test_hashes = load_version_test_hashes()
     print(f"Version test songs: {len(set(test_hashes))}\n")
 
     # Models
@@ -238,7 +200,7 @@ def main():
     print("\nPre-loading features...")
     mel_ds   = load_frame_dataset(mel_cfg,   test_hashes)
     pesto_ds = load_frame_dataset(pesto_cfg, test_hashes)
-    midi_ds, hash_to_idx, midi_fs = load_midi_dataset(midi_cfg, midi_names)
+    midi_ds, midi_fs = load_midi_dataset(midi_cfg, test_hashes)
 
     mel_win   = int(WINDOW_SEC * MEL_FPS)    # ~937 frames
     pesto_win = int(WINDOW_SEC * PESTO_FPS)  # 600  frames
@@ -246,7 +208,7 @@ def main():
 
     common = (set(mel_ds.loaded_data.keys())
               & set(pesto_ds.loaded_data.keys())
-              & set(hash_to_idx.keys()))
+              & set(midi_ds.loaded_data.keys()))
     print(f"\nCommon songs (all 3 modalities): {len(common)}")
 
     all_y_true, all_y_pred = [], []
@@ -254,9 +216,8 @@ def main():
     for hk in tqdm(sorted(common), desc='Ensemble inference'):
         mel_feat   = mel_ds.loaded_data[hk]                       # (40, T_mel)
         pesto_feat = pesto_ds.loaded_data[hk]                     # (2,  T_pesto)
-        midi_item  = midi_ds.memory_cache[hash_to_idx[hk]]
-        piano_roll = midi_item['piano_roll']                       # (128, T_midi)
-        gt_label   = midi_item['frame_label']                      # (T_midi, 5)
+        piano_roll = midi_ds.loaded_data[hk]                       # (128, T_midi)
+        gt_label   = midi_ds.loaded_label[hk]                      # (T_midi, 5)
 
         mel_probs   = infer_full_song_2d(mel_model,   mel_feat,   mel_win,   DEV)
         pesto_probs = infer_full_song_1d(pesto_model, pesto_feat, pesto_win, DEV)

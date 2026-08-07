@@ -14,6 +14,10 @@ analysis/
 analysis_simple/
 # viewer inference cache
 viewer/cache/
+# built Release assets (regenerate with scripts/make_release_bundles.sh)
+release/
+# per-frame inference CSVs
+outputs/infer/
 # hydra run snapshot (hydra.run.dir is '.')
 .hydra/
 *.log

@@ -35,7 +35,7 @@ from tqdm import tqdm
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from paths import DATA_ROOT, MIDI_REPO, REPO_ROOT
+from paths import DATA_ROOT, REPO_ROOT
 # NOTE: PansoriMIDIDetection is added to sys.path lazily inside functions
 # to avoid shadowing frame models/datasets packages.
 
@@ -50,14 +50,13 @@ from trainers import plot_posteriorgram
 
 # Paths
 REPO_FRAME = REPO_ROOT
-REPO_MIDI  = MIDI_REPO
 
 MODEL_DIRS = {
     'mel':   REPO_FRAME / 'weights/frame/Verstion_Stratified/0410_Mel_Separated_Version',
     'chroma': REPO_FRAME / 'weights/frame/Verstion_Stratified/0410_Chroma_Version',
 }
-MIDI_CKPT    = REPO_MIDI / 'outputs/2026-04-16/14-18-10/best_model_fold1.pt'
-MIDI_CFG     = REPO_MIDI / 'configs/config.yaml'
+MIDI_CKPT    = REPO_FRAME / 'weights/midi/MIDI_Version/23-43-24/fold1_best_model.pt'
+MIDI_CFG     = REPO_FRAME / 'configs/frame/midi.yaml'
 VERSION_SPLIT= DATA_ROOT / 'pansori_version_split'
 OUT_DIR      = REPO_FRAME / 'outputs/ensemble'
 
@@ -90,33 +89,14 @@ def load_frame_model(model_dir: Path, device: str):
 
 
 def load_midi_model(ckpt: Path, cfg_path: Path, device: str):
-    # Temporarily evict frame 'models'/'datasets' from sys.modules so that
-    # MIDI repo's relative imports resolve against MIDI's own packages.
-    import importlib
-    _evicted = {k: v for k, v in sys.modules.items()
-                if k == 'models' or k.startswith('models.') or
-                   k == 'datasets' or k.startswith('datasets.')}
-    for k in _evicted:
-        del sys.modules[k]
+    """MIDI is a first-class modality: this repo's Conv2DGRU + midi.yaml.
 
-    sys.path.insert(0, str(REPO_MIDI))
-    try:
-        from models.model_zoo import Conv2DGRU as MidiModel
-    finally:
-        sys.path.pop(0)
-        # Restore frame packages
-        for k in list(sys.modules.keys()):
-            if k == 'models' or k.startswith('models.') or \
-               k == 'datasets' or k.startswith('datasets.'):
-                del sys.modules[k]
-        sys.modules.update(_evicted)
-
+    Checkpoints trained in the old PansoriMIDIDetection repo load unchanged —
+    same architecture, same layer names.
+    """
     midi_cfg = OmegaConf.load(cfg_path)
-    for key in ['data', 'model', 'train']:
-        sub = OmegaConf.load(REPO_MIDI / f'configs/{key}/{key}.yaml')
-        OmegaConf.update(midi_cfg, key, sub, merge=True)
-    model = MidiModel(midi_cfg.model).to(device)
-    state = torch.load(ckpt, map_location=device)
+    model = frame_models.Conv2DGRU(midi_cfg.model.params).to(device)
+    state = torch.load(ckpt, map_location=device, weights_only=True)
     state = {k.replace('module.', ''): v for k, v in state.items()}
     model.load_state_dict(state)
     model.eval()
@@ -139,38 +119,12 @@ def load_frame_dataset(cfg, test_hash_keys: list):
     return ds
 
 
-def load_midi_dataset(midi_cfg, test_midi_names: list):
-    # Evict frame 'datasets' from sys.modules so MIDI's datasets package loads
-    _evicted = {k: v for k, v in sys.modules.items()
-                if k == 'datasets' or k.startswith('datasets.')}
-    for k in _evicted:
-        del sys.modules[k]
-    sys.path.insert(0, str(REPO_MIDI))
-    try:
-        from datasets.dataset import BaseDataset
-    finally:
-        sys.path.pop(0)
-        for k in list(sys.modules.keys()):
-            if k == 'datasets' or k.startswith('datasets.'):
-                del sys.modules[k]
-        sys.modules.update(_evicted)
-
-    fs          = midi_cfg.data.fs
-    window_size = int(midi_cfg.data.window_size * fs)
-    ds = BaseDataset(
-        midi_cfg.data.dir.midi_dir,
-        midi_cfg.data.dir.label_path,
-        song_list=test_midi_names,
-        fs=fs,
-        window_size=window_size,
-        is_train=False,
-    )
-    # Build hash → cache_idx lookup
-    ds.hash_to_idx = {
-        item['song_name'].split('-')[0]: idx
-        for idx, item in enumerate(ds.memory_cache)
-    }
-    return ds, fs, window_size
+def load_midi_dataset(midi_cfg, test_hash_keys: list):
+    """MidiFrameDataset is hash-keyed like every other modality, so the generic
+    load_frame_dataset() above handles it — no name translation needed."""
+    fs          = midi_cfg.dataset.params.fs
+    window_size = int(midi_cfg.dataset.params.window * fs)
+    return load_frame_dataset(midi_cfg, test_hash_keys), fs, window_size
 
 
 # ── Full-song inference ───────────────────────────────────────────────────────
@@ -204,28 +158,8 @@ def full_song_frame_inference(model, feature_full: torch.Tensor, window_frames: 
     return np.concatenate(all_probs, axis=0)  # (T_total, C)
 
 
-@torch.no_grad()
-def full_song_midi_inference(model, piano_roll: torch.Tensor, window_size: int, device: str):
-    """
-    piano_roll : (128, T_midi_total)
-    Returns    : probs (T_midi_total, num_classes) numpy
-    """
-    T = piano_roll.shape[1]
-    all_probs = []
-
-    for start in range(0, T, window_size):
-        end = min(start + window_size, T)
-        chunk = piano_roll[:, start:end]                    # (128, chunk_len)
-        if chunk.shape[1] < window_size:
-            pad = torch.zeros(128, window_size - chunk.shape[1])
-            chunk = torch.cat([chunk, pad], dim=1)
-        x = chunk.unsqueeze(0).to(device)                   # (1, 128, window_size)
-        out = model(x)                                       # (1, T_win, C)
-        probs = torch.softmax(out, dim=-1)[0].cpu().numpy() # (T_win, C)
-        valid_len = end - start
-        all_probs.append(probs[:valid_len])
-
-    return np.concatenate(all_probs, axis=0)  # (T_midi_total, C)
+# MIDI needs no inference helper of its own — a (128, T) piano roll is just
+# another (n_bins, T) feature, so full_song_frame_inference() above handles it.
 
 
 # ── Temporal alignment ────────────────────────────────────────────────────────
@@ -256,41 +190,15 @@ def align_audio_to_midi(audio_probs: np.ndarray, T_midi: int) -> np.ndarray:
 # ── Test split parsing ────────────────────────────────────────────────────────
 
 def load_version_test_split(version_split_dir: Path):
-    """Returns frame test hash_keys and MIDI test filenames from test.txt."""
+    """Returns the test hash_keys from test.txt.
+
+    Every modality including MIDI is keyed by hash now, so the old
+    hash_key -> midi-filename resolution step is gone.
+    """
     lines = [l.strip() for l in (version_split_dir / 'test.txt').read_text('utf-8').splitlines() if l.strip()]
     frame_hashes = [line.split('-')[0] for line in lines]
-
-    # MIDI filenames: build from MIDI dataset utils
-    sys.path.insert(0, str(REPO_MIDI))
-    import re, json, unicodedata
-    from pathlib import Path as P
-
-    midi_cfg = OmegaConf.load(MIDI_CFG)
-    for key in ['data']:
-        sub = OmegaConf.load(REPO_MIDI / f'configs/{key}/{key}.yaml')
-        OmegaConf.update(midi_cfg, key, sub, merge=True)
-
-    with open(midi_cfg.data.dir.label_path, 'r', encoding='utf-8') as f:
-        raw = json.load(f)
-
-    def _midi_key(name):
-        n = name.replace('_vocal.mid', '')
-        return re.sub(r'^[0-9a-f]+-\d+-', '', n)
-
-    midi_dir = P(midi_cfg.data.dir.midi_dir)
-    key_to_midi = {}
-    for item in raw:
-        fu = unicodedata.normalize('NFC', item['file_upload'])
-        midi_name = fu.rsplit('.', 1)[0] + '_vocal.mid'
-        if (midi_dir / midi_name).exists():
-            key_to_midi[_midi_key(midi_name)] = midi_name
-
-    def _strip_uuid(key):
-        return re.sub(r'^[0-9a-f]+-\d+-', '', key)
-
-    midi_test = [key_to_midi[_strip_uuid(k)] for k in lines if _strip_uuid(k) in key_to_midi]
-    print(f"  test.txt: {len(lines)} lines → {len(frame_hashes)} hash keys, {len(midi_test)} MIDI files")
-    return frame_hashes, midi_test
+    print(f"  test.txt: {len(lines)} lines → {len(frame_hashes)} hash keys")
+    return frame_hashes
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -330,7 +238,7 @@ def main():
     print(f"Device: {DEV}\n")
 
     # ── Load test split ───────────────────────────────────────────────────────
-    frame_test_hashes, midi_test_names = load_version_test_split(VERSION_SPLIT)
+    frame_test_hashes = load_version_test_split(VERSION_SPLIT)
 
     # ── Load models ───────────────────────────────────────────────────────────
     print("Loading models...")
@@ -345,13 +253,13 @@ def main():
     print("\nPre-loading features...")
     mel_ds    = load_frame_dataset(mel_cfg,    frame_test_hashes)
     chroma_ds = load_frame_dataset(chroma_cfg, frame_test_hashes)
-    midi_ds, midi_fs, midi_win = load_midi_dataset(midi_cfg, midi_test_names)
+    midi_ds, midi_fs, midi_win = load_midi_dataset(midi_cfg, frame_test_hashes)
 
     # Common hash keys that exist in all 3 datasets
     common_hashes = (
         set(mel_ds.loaded_data.keys())
         & set(chroma_ds.loaded_data.keys())
-        & set(midi_ds.hash_to_idx.keys())
+        & set(midi_ds.loaded_data.keys())
     )
     print(f"\nCommon songs across all 3 modalities: {len(common_hashes)}")
 
@@ -368,14 +276,12 @@ def main():
         # --- Full-song probs at native frame rates ---
         mel_full    = mel_ds.loaded_data[hash_key]    # (n_bins, T_mel)
         chroma_full = chroma_ds.loaded_data[hash_key] # (n_bins, T_chroma)
-        cache_idx   = midi_ds.hash_to_idx[hash_key]
-        midi_item   = midi_ds.memory_cache[cache_idx]
-        piano_roll  = midi_item['piano_roll']          # (128, T_midi)
-        gt_label    = midi_item['frame_label']         # (T_midi, 5) one-hot at midi_fps
+        piano_roll  = midi_ds.loaded_data[hash_key]    # (128, T_midi)
+        gt_label    = midi_ds.loaded_label[hash_key]   # (T_midi, 5) one-hot at midi_fps
 
         mel_probs    = full_song_frame_inference(mel_model,    mel_full,    AUDIO_WIN_FRAMES, DEV)
         chroma_probs = full_song_frame_inference(chroma_model, chroma_full, AUDIO_WIN_FRAMES, DEV)
-        midi_probs   = full_song_midi_inference(midi_model,   piano_roll,  midi_win,         DEV)
+        midi_probs   = full_song_frame_inference(midi_model,  piano_roll,  midi_win,         DEV)
 
         T_midi = midi_probs.shape[0]
 

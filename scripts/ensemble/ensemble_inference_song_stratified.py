@@ -5,7 +5,7 @@ Ensemble Inference — Song-Stratified 10-Fold Cross Validation
 Each fold uses the same song-stratified train/val/test split that was
 used during training.  The 10 Mel and 10 Pesto model directories are
 discovered automatically from their config.yaml target_folds field.
-MIDI fold checkpoints (best_model_fold{k}.pt) are discovered recursively
+MIDI fold checkpoints (fold{k}_best_model.pt) are discovered recursively
 under --midi_dir.
 
 Usage:
@@ -16,7 +16,7 @@ Usage:
     python scripts/ensemble/ensemble_inference_song_stratified.py --no_midi
     # Custom weights (Mel MIDI Pesto)
     python scripts/ensemble/ensemble_inference_song_stratified.py \\
-        --midi_dir $PANSORI_MIDI_REPO/outputs \\
+        --midi_dir weights/midi/MIDI_Song_Stratified \\
         --weights 0.35 0.35 0.30
     python scripts/ensemble/ensemble_inference_song_stratified.py --no_posteriors
 """
@@ -41,7 +41,7 @@ from tqdm import tqdm
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from paths import DATA_ROOT, MIDI_REPO, REPO_ROOT
+from paths import DATA_ROOT, REPO_ROOT
 
 import matplotlib
 matplotlib.use('Agg')
@@ -52,7 +52,6 @@ import datasets as frame_datasets
 from trainers import plot_posteriorgram
 
 REPO_FRAME = REPO_ROOT
-REPO_MIDI  = MIDI_REPO
 
 MEL_DIR   = REPO_FRAME / 'weights/frame/Mel_Original_Song_Stratified'
 PESTO_DIR = REPO_FRAME / 'weights/frame/Pesto_Song_Stratified'
@@ -93,15 +92,30 @@ def discover_fold_dirs(base_dir: Path) -> dict[int, Path]:
 
 def discover_midi_ckpts(midi_dir: Path) -> dict[int, Path]:
     """
-    Recursively find best_model_fold{k}.pt files under midi_dir.
+    Recursively find fold{k}_best_model.pt files under midi_dir.
     Returns {fold_number: ckpt_path}.
+
+    Warns on ambiguity: weights/midi/ holds both MIDI_Song_Stratified/ and
+    MIDI_Version/, and both name their checkpoints fold1_best_model.pt. Pointing
+    --midi_dir at the parent would silently pick whichever sorts last and mix a
+    version-split model into a song-stratified fold.
     """
-    result = {}
-    for pt in sorted(midi_dir.rglob('best_model_fold*.pt')):
-        m = re.search(r'best_model_fold(\d+)\.pt$', pt.name)
+    candidates = defaultdict(list)
+    for pt in sorted(midi_dir.rglob('fold*_best_model.pt')):
+        m = re.search(r'fold(\d+)_best_model\.pt$', pt.name)
         if m:
-            result[int(m.group(1))] = pt
-    return dict(sorted(result.items()))
+            candidates[int(m.group(1))].append(pt)
+
+    result = {}
+    for fold, paths in sorted(candidates.items()):
+        if len(paths) > 1:
+            print(f"  WARNING: fold {fold} has {len(paths)} candidate MIDI checkpoints under "
+                  f"{midi_dir} — using {paths[0]}. Point --midi_dir at a single "
+                  f"experiment directory to disambiguate:")
+            for p in paths:
+                print(f"      {p}")
+        result[fold] = paths[0]
+    return result
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────
@@ -118,42 +132,17 @@ def load_frame_model(model_dir: Path, device: str):
     return model, cfg
 
 
-def _load_midi_cfg():
-    """Load and merge the MIDI project config (cached after first call)."""
-    if not hasattr(_load_midi_cfg, '_cache'):
-        midi_cfg = OmegaConf.load(REPO_MIDI / 'configs/config.yaml')
-        for key in ['data', 'model', 'train']:
-            sub = OmegaConf.load(REPO_MIDI / f'configs/{key}/{key}.yaml')
-            OmegaConf.update(midi_cfg, key, sub, merge=True)
-        _load_midi_cfg._cache = midi_cfg
-    return _load_midi_cfg._cache
-
-
-def _get_midi_model_class():
-    """Import Conv2DGRU from MIDI repo without polluting frame model imports."""
-    _evicted = {k: v for k, v in sys.modules.items()
-                if k in ('models', 'datasets') or
-                   k.startswith('models.') or k.startswith('datasets.')}
-    for k in _evicted:
-        del sys.modules[k]
-    sys.path.insert(0, str(REPO_MIDI))
-    try:
-        from models.model_zoo import Conv2DGRU as MidiConv2DGRU
-        return MidiConv2DGRU
-    finally:
-        sys.path.pop(0)
-        for k in list(sys.modules.keys()):
-            if k in ('models', 'datasets') or \
-               k.startswith('models.') or k.startswith('datasets.'):
-                del sys.modules[k]
-        sys.modules.update(_evicted)
+def load_midi_cfg():
+    """MIDI is a first-class modality now — just this repo's own config."""
+    return OmegaConf.load(REPO_ROOT / 'configs/frame/midi.yaml')
 
 
 def load_midi_model(ckpt: Path, device: str):
-    midi_cfg = _load_midi_cfg()
-    MidiConv2DGRU = _get_midi_model_class()
-    model = MidiConv2DGRU(midi_cfg.model).to(device)
-    state = torch.load(ckpt, map_location=device)
+    """Checkpoints trained in the old PansoriMIDIDetection repo load into this
+    repo's Conv2DGRU unchanged — same architecture, same layer names."""
+    midi_cfg = load_midi_cfg()
+    model = frame_models.Conv2DGRU(midi_cfg.model.params).to(device)
+    state = torch.load(ckpt, map_location=device, weights_only=True)
     state = {k.replace('module.', ''): v for k, v in state.items()}
     model.load_state_dict(state)
     model.eval()
@@ -207,65 +196,9 @@ def load_frame_dataset(cfg, test_hash_keys: list):
     return ds
 
 
-def load_midi_dataset(midi_cfg, test_midi_names: list):
-    _evicted = {k: v for k, v in sys.modules.items()
-                if k == 'datasets' or k.startswith('datasets.')}
-    for k in _evicted:
-        del sys.modules[k]
-    sys.path.insert(0, str(REPO_MIDI))
-    try:
-        from datasets.dataset import BaseDataset
-    finally:
-        sys.path.pop(0)
-        for k in list(sys.modules.keys()):
-            if k == 'datasets' or k.startswith('datasets.'):
-                del sys.modules[k]
-        sys.modules.update(_evicted)
-
-    fs = midi_cfg.data.fs
-    window_size = int(midi_cfg.data.window_size * fs)
-    ds = BaseDataset(
-        midi_cfg.data.dir.midi_dir,
-        midi_cfg.data.dir.label_path,
-        song_list=test_midi_names,
-        fs=fs,
-        window_size=window_size,
-        is_train=False,
-    )
-    ds.hash_to_idx = {
-        item['song_name'].split('-')[0]: idx
-        for idx, item in enumerate(ds.memory_cache)
-    }
-    return ds, fs, window_size
-
-
-# ── MIDI test name resolution ─────────────────────────────────────────────────
-
-def build_hash_to_midi_name(midi_cfg) -> dict[str, str]:
-    """Build mapping: hash_key prefix → midi filename."""
-    import json, unicodedata
-    with open(midi_cfg.data.dir.label_path, 'r', encoding='utf-8') as f:
-        raw = json.load(f)
-
-    def _midi_key(name):
-        n = name.replace('_vocal.mid', '')
-        return re.sub(r'^[0-9a-f]+-\d+-', '', n)
-
-    midi_dir = Path(midi_cfg.data.dir.midi_dir)
-    key_to_midi = {}
-    for item in raw:
-        fu = unicodedata.normalize('NFC', item['file_upload'])
-        midi_name = fu.rsplit('.', 1)[0] + '_vocal.mid'
-        if (midi_dir / midi_name).exists():
-            key_to_midi[_midi_key(midi_name)] = midi_name
-    return key_to_midi
-
-
-def lines_to_midi_names(full_lines: list, key_to_midi: dict) -> list[str]:
-    """full_lines: raw txt file entries like '01ed19bb-06-김소희-...' → midi filenames."""
-    def _strip_uuid(line):
-        return re.sub(r'^[0-9a-f]+-\d+-', '', line)
-    return [key_to_midi[_strip_uuid(ln)] for ln in full_lines if _strip_uuid(ln) in key_to_midi]
+# MIDI needs no dataset loader of its own: MidiFrameDataset is hash-keyed like
+# every other modality, so load_frame_dataset() above handles it. The former
+# hash_key -> midi-filename translation layer is gone with it.
 
 
 # ── Full-song inference ───────────────────────────────────────────────────────
@@ -285,19 +218,8 @@ def full_song_frame_inference(model, feature_full: torch.Tensor, window_frames: 
     return np.concatenate(all_probs, axis=0)  # (T, C)
 
 
-@torch.no_grad()
-def full_song_midi_inference(model, piano_roll: torch.Tensor, window_size: int, device: str):
-    """piano_roll: (128, T) → probs (T, C) at MIDI frame rate"""
-    T = piano_roll.shape[1]
-    all_probs = []
-    for start in range(0, T, window_size):
-        end   = min(start + window_size, T)
-        chunk = piano_roll[:, start:end]
-        if chunk.shape[1] < window_size:
-            chunk = torch.cat([chunk, torch.zeros(128, window_size - chunk.shape[1])], dim=1)
-        probs = torch.softmax(model(chunk.unsqueeze(0).to(device)), dim=-1)[0].cpu().numpy()
-        all_probs.append(probs[:end - start])
-    return np.concatenate(all_probs, axis=0)  # (T, C)
+# MIDI inference is the same sliding-window loop as any other frame modality —
+# full_song_frame_inference() handles a (128, T) piano roll directly.
 
 
 # ── Temporal alignment (audio fps → MIDI fps) ────────────────────────────────
@@ -358,9 +280,9 @@ def main():
                         metavar='W',
                         help='Soft voting weights. 2 values for Mel+Pesto, '
                              '3 values for Mel+MIDI+Pesto (must sum to 1).')
-    default_midi_dir = str(REPO_MIDI / 'outputs')
+    default_midi_dir = str(REPO_FRAME / 'weights/midi/MIDI_Song_Stratified')
     parser.add_argument('--midi_dir', type=str, default=default_midi_dir,
-                        help=f'Directory containing best_model_fold{{k}}.pt files '
+                        help=f'Directory containing fold{{k}}_best_model.pt files '
                              f'(searched recursively). Default: {default_midi_dir}')
     parser.add_argument('--no_midi', action='store_true',
                         help='Disable MIDI modality (Mel + Pesto only).')
@@ -374,7 +296,7 @@ def main():
     if not args.no_midi and args.midi_dir:
         midi_ckpt_map = discover_midi_ckpts(Path(args.midi_dir))
         if not midi_ckpt_map:
-            raise FileNotFoundError(f"No best_model_fold*.pt found under {args.midi_dir}")
+            raise FileNotFoundError(f"No fold*_best_model.pt found under {args.midi_dir}")
         print(f"Found MIDI checkpoints for folds: {sorted(midi_ckpt_map.keys())}")
 
     use_midi = bool(midi_ckpt_map)
@@ -404,13 +326,12 @@ def main():
     target_folds = sorted(args.folds) if args.folds else sorted(mel_fold_dirs.keys())
     print(f"Running folds: {target_folds}\n")
 
-    # ── Pre-load shared MIDI config + key→filename mapping ────────────────────
-    midi_cfg = key_to_midi = None
+    # ── Pre-load shared MIDI config ───────────────────────────────────────────
+    midi_cfg = None
     if use_midi:
-        midi_cfg    = _load_midi_cfg()
-        midi_fs     = midi_cfg.data.fs
-        midi_win    = int(midi_cfg.data.window_size * midi_fs)
-        key_to_midi = build_hash_to_midi_name(midi_cfg)
+        midi_cfg = load_midi_cfg()
+        midi_fs  = midi_cfg.dataset.params.fs
+        midi_win = int(midi_cfg.dataset.params.window * midi_fs)
         print(f"MIDI config loaded  fs={midi_fs}  window={midi_win} frames\n")
 
     # ── Load VT hashes (version test 18 songs) ───────────────────────────────
@@ -447,7 +368,7 @@ def main():
                 print(f"  WARNING: no MIDI checkpoint for fold {fold} — skipping MIDI for this fold")
             else:
                 fold_midi_model, _ = load_midi_model(midi_ckpt_map[fold], DEV)
-                print(f"  MIDI: {midi_ckpt_map[fold].relative_to(REPO_MIDI.parent)}")
+                print(f"  MIDI: {midi_ckpt_map[fold].relative_to(REPO_FRAME)}")
 
         fold_use_midi = fold_midi_model is not None
 
@@ -465,12 +386,11 @@ def main():
         common_keys = sorted(set(mel_ds.loaded_data.keys()) & set(pesto_ds.loaded_data.keys()))
         print(f"  Matched Mel∩Pesto: {len(common_keys)} songs")
 
-        # ── Optional MIDI dataset ─────────────────────────────────────────────
+        # ── Optional MIDI dataset (same loader as the audio modalities) ───────
         midi_ds = None
         if fold_use_midi:
-            midi_test_names = lines_to_midi_names(test_lines, key_to_midi)
-            midi_ds, _midi_fs, _midi_win = load_midi_dataset(midi_cfg, midi_test_names)
-            common_keys = [k for k in common_keys if k in midi_ds.hash_to_idx]
+            midi_ds = load_frame_dataset(midi_cfg, test_keys)
+            common_keys = [k for k in common_keys if k in midi_ds.loaded_data]
             print(f"  With MIDI: {len(common_keys)} songs")
 
         # ── Per-fold posteriorgram dir ────────────────────────────────────────
@@ -489,17 +409,15 @@ def main():
             pesto_probs = full_song_frame_inference(pesto_model, pesto_full, PESTO_WIN_FRAMES, DEV)
 
             if fold_use_midi:
-                cache_idx  = midi_ds.hash_to_idx[hash_key]
-                midi_item  = midi_ds.memory_cache[cache_idx]
-                piano_roll = midi_item['piano_roll']                      # (128, T_midi)
-                midi_probs = full_song_midi_inference(fold_midi_model, piano_roll, midi_win, DEV)
+                piano_roll = midi_ds.loaded_data[hash_key]                # (128, T_midi)
+                midi_probs = full_song_frame_inference(fold_midi_model, piano_roll, midi_win, DEV)
                 T_midi     = midi_probs.shape[0]
 
                 mel_aligned   = align_to_fps(mel_probs,   AUDIO_FPS,  T_midi, MIDI_FPS)
                 pesto_aligned = align_to_fps(pesto_probs, PESTO_FPS,  T_midi, MIDI_FPS)
                 ens_probs     = w_mel * mel_aligned + w_midi * midi_probs + w_pesto * pesto_aligned
 
-                gt_label_np = midi_item['frame_label'].numpy()            # (T_midi, C) one-hot
+                gt_label_np = midi_ds.loaded_label[hash_key].numpy()      # (T_midi, C) one-hot
                 gt_cls      = gt_label_np.argmax(axis=1)
                 fps_ref     = MIDI_FPS
                 win_ref     = MIDI_WIN_FRAMES

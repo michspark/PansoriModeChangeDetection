@@ -1403,3 +1403,198 @@ class CMERTFrameDataset(AudioFrameDataset):
 
         return hash_key, audio_slice.squeeze(0), frame_label
 
+
+
+class MidiFrameDataset(BaseDataset):
+    """Frame-level dataset over transcribed-MIDI piano rolls.
+
+    Ported from the PansoriMIDIDetection repo so MIDI is a peer of the audio
+    modalities. Structurally this mirrors PitchFrameDataset — a non-audio,
+    preloaded-array dataset keyed by hash_key — with a [128, T] piano roll in
+    place of the [2, T] pitch contour.
+
+    Two things are deliberately preserved from the original implementation so
+    that checkpoints trained there keep loading and scoring the same:
+
+      * Piano roll values stay raw pretty_midi velocities (0-127). They are
+        NOT normalised; the trained weights expect that input range.
+      * Training crops are a plain uniform random window (no margin_ratio
+        expansion), matching the original sampler.
+
+    Eval windows are exact `window` seconds. The original snapped window
+    boundaries to silence (+/-1s) to avoid cutting notes; that is intentionally
+    dropped here so MIDI frames line up with the other modalities for
+    soft-voting ensembles.
+    """
+
+    def __init__(self, data_dir, label_dir, num_classes=5, fs=10, window=30,
+                 margin_ratio=1, is_valid=False, aug=False):
+        # BaseDataset's `sr` is the label sampling rate concept; for MIDI the
+        # piano roll frame rate `fs` plays that role.
+        super().__init__(data_dir, label_dir, num_classes, fs, window, margin_ratio, is_valid, aug)
+        self.fs = fs
+        self.window_frame = self.window * self.fs
+
+        self.loaded_data = self.get_data()
+        self.loaded_label = self.get_frame_label()
+
+        for hash_key in set(self.loaded_label.keys()) - set(self.loaded_data.keys()):
+            self.loaded_hash.remove(hash_key)
+        self.loaded_label = {key: self.ms_to_frame_label(val) for key, val in self.loaded_label.items()}
+
+        # Piano roll length (ceil(duration*fs)) and label length (duration_ms //
+        # ms_per_frame) disagree by a few frames on almost every song. Trim both
+        # to the shorter here, at load time -- not just in __getitem__ -- because
+        # the ensemble scripts read loaded_data/loaded_label directly and would
+        # otherwise concatenate mismatched prediction/GT arrays.
+        for hash_key in list(self.loaded_data.keys()):
+            if hash_key not in self.loaded_label:
+                continue
+            T = min(self.loaded_data[hash_key].shape[1], self.loaded_label[hash_key].shape[0])
+            self.loaded_data[hash_key]  = self.loaded_data[hash_key][:, :T]
+            self.loaded_label[hash_key] = self.loaded_label[hash_key][:T]
+
+        self.training_instances = []
+        self.val_segments = []
+        self.prepare_training_instances()
+
+
+    def get_data(self):
+        # Imported lazily so pretty_midi stays optional for the audio modalities.
+        import pretty_midi
+
+        loaded_data = {}
+        for midi_file in tqdm(sorted(self.data_dir.rglob('*.mid')), desc='Load Piano Rolls'):
+            hash_key = unicodedata.normalize('NFC', midi_file.name.split("-")[0])
+            if hash_key not in self.loaded_hash: continue
+
+            roll = pretty_midi.PrettyMIDI(str(midi_file)).get_piano_roll(fs=self.fs)
+            loaded_data[hash_key] = torch.tensor(roll, dtype=torch.float32)  # [128, T], raw velocity
+
+        return loaded_data
+
+
+    def pitch_shift(self, piano_roll, shift_range=(-3, 3)):
+        shift = random.randint(*shift_range)
+        if shift == 0: return piano_roll
+        shifted = torch.roll(piano_roll, shift, dims=0)
+        if shift > 0: shifted[:shift, :] = 0
+        else: shifted[shift:, :] = 0
+        return shifted
+
+
+    def time_masking(self, piano_roll, total_mask_sec=5.0, num_masks=3):
+        pr = piano_roll.clone()
+        T = pr.shape[1]
+        max_per_mask = int(total_mask_sec * self.fs) // num_masks
+        if max_per_mask < 1: return pr
+
+        for _ in range(num_masks):
+            mask_len = random.randint(1, max_per_mask)
+            if T <= mask_len: continue
+            start = random.randint(0, T - mask_len)
+            pr[:, start:start + mask_len] = 0
+        return pr
+
+
+    def prepare_training_instances(self, target_hash_keys=None):
+        self.training_instances = []
+
+        for hash_key in list(self.loaded_hash):
+            if hash_key not in self.loaded_data:
+                self.loaded_hash.remove(hash_key)
+                continue
+            if target_hash_keys is not None and hash_key not in target_hash_keys:
+                continue
+
+            roll_length = self.loaded_data[hash_key].shape[1]
+            num_repeats = max(1, roll_length // self.window_frame)
+            self.training_instances.extend([hash_key] * num_repeats)
+
+    def update_training_instances(self, target_hash_keys):
+        self.prepare_training_instances(target_hash_keys)
+
+    def prepare_val_segments(self, target_hash_keys):
+        val_segments = []
+        for hash_key in target_hash_keys:
+            if hash_key not in self.loaded_data: continue
+            roll_length = self.loaded_data[hash_key].shape[1]
+            for start in range(0, roll_length, self.window_frame):
+                val_segments.append((hash_key, start, min(start + self.window_frame, roll_length)))
+        return val_segments
+
+    def compose_validset(self, target_hash_keys):
+        validset = copy(self)
+        validset.is_valid = True
+        validset.loaded_hash = [k for k in target_hash_keys if k in self.loaded_data]
+        validset.loaded_data = {k: self.loaded_data[k] for k in validset.loaded_hash}
+        validset.loaded_label = {k: self.loaded_label[k] for k in validset.loaded_hash}
+        validset.val_segments = self.prepare_val_segments(validset.loaded_hash)
+        return validset
+
+    def get_split(self, target_hash_keys, split='train'):
+        if split == 'train':
+            self.update_training_instances(target_hash_keys)
+        else:
+            return self.compose_validset(target_hash_keys)
+
+
+    def ms_to_frame_label(self, ms_label):
+        # 1000/fs ms per frame (100ms at fs=10). Vectorised majority vote,
+        # same construction as MelDataset.ms_to_frame_label.
+        ms_per_frame = 1000 // self.fs
+        num_frames = int(ms_label.shape[0] / ms_per_frame)
+
+        if num_frames == 0:
+            pad_len = ms_per_frame - ms_label.shape[0]
+            ms_label = torch.nn.functional.pad(ms_label, (0, 0, 0, pad_len))
+            num_frames = 1
+
+        trimmed = ms_label[:num_frames * ms_per_frame]
+        grouped = trimmed.view(num_frames, ms_per_frame, -1)
+        class_sums = grouped.sum(dim=1)
+        return (class_sums == class_sums.max(dim=-1, keepdim=True).values).float()
+
+
+    def __len__(self):
+        if self.is_valid: return len(self.val_segments)
+        return len(self.training_instances)
+
+
+    def _pad_to_window(self, roll_slice, label_slice):
+        if roll_slice.shape[1] < self.window_frame:
+            pad = self.window_frame - roll_slice.shape[1]
+            roll_slice = torch.nn.functional.pad(roll_slice, (0, pad))
+            pad_label = torch.zeros((pad, label_slice.shape[1]))
+            pad_label[:, self.label_map['Unknown']] = 1
+            label_slice = torch.cat([label_slice, pad_label], dim=0)
+        return roll_slice, label_slice
+
+
+    def __getitem__(self, idx):
+        if self.is_valid:
+            hash_key, start, end = self.val_segments[idx]
+            roll, label = self.loaded_data[hash_key], self.loaded_label[hash_key]
+            roll_slice, label_slice = self._pad_to_window(roll[:, start:end], label[start:end])
+            return hash_key, roll_slice, label_slice
+
+        hash_key = self.training_instances[idx]
+        roll, label = self.loaded_data[hash_key], self.loaded_label[hash_key]
+
+        # Piano roll length and label length can differ by a frame or two after
+        # the ms->frame majority vote; trim both to the shorter.
+        T = min(roll.shape[1], label.shape[0])
+        roll, label = roll[:, :T], label[:T]
+
+        start = random.randint(0, T - self.window_frame) if T > self.window_frame else 0
+        roll_slice, label_slice = self._pad_to_window(
+            roll[:, start:start + self.window_frame], label[start:start + self.window_frame])
+
+        if self.aug:
+            if random.random() < 0.5: roll_slice = self.pitch_shift(roll_slice)
+            if random.random() < 0.5: roll_slice = self.time_masking(roll_slice)
+
+        assert label_slice.shape[0] == roll_slice.shape[1], \
+            f"label {label_slice.shape[0]} != roll {roll_slice.shape[1]}"
+
+        return hash_key, roll_slice, label_slice

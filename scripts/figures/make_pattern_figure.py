@@ -16,7 +16,7 @@ Rows per column:
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from paths import DATA_ROOT, MIDI_REPO, REPO_ROOT
+from paths import DATA_ROOT, REPO_ROOT
 
 import sys
 
@@ -40,40 +40,12 @@ from pathlib import Path
 
 # ── repo paths ─────────────────────────────────────────────────────────────────
 REPO_MODE = REPO_ROOT
-REPO_MIDI = MIDI_REPO
 
 # Mode Detection repo first — must stay first so 'models' resolves to REPO_MODE
 sys.path.insert(0, str(REPO_MODE))
 import models as mode_models
 
-# MIDI repo: import via importlib to avoid polluting sys.path 'models' namespace
-import importlib.util, types
-
-def _import_from(repo: Path, rel: str, as_name: str):
-    spec = importlib.util.spec_from_file_location(as_name, repo / rel)
-    mod  = importlib.util.module_from_spec(spec)
-    sys.modules[as_name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-# Load MIDI models package as 'midi_models' to avoid collision with 'models'
-import importlib
-_midi_pkg = types.ModuleType('midi_models')
-_midi_pkg.__path__ = [str(REPO_MIDI / 'models')]
-_midi_pkg.__package__ = 'midi_models'
-sys.modules['midi_models'] = _midi_pkg
-
-for _sub in ('modules', 'model_utils', 'model_zoo'):
-    _spec = importlib.util.spec_from_file_location(
-        f'midi_models.{_sub}', REPO_MIDI / f'models/{_sub}.py',
-        submodule_search_locations=[]
-    )
-    _mod = importlib.util.module_from_spec(_spec)
-    _mod.__package__ = 'midi_models'
-    sys.modules[f'midi_models.{_sub}'] = _mod
-    _spec.loader.exec_module(_mod)
-
-MidiConv2DGRU = sys.modules['midi_models.model_zoo'].Conv2DGRU
+# MIDI uses this repo's own Conv2DGRU (mode_models) like every other modality.
 
 # PianoRollGenerator (only needs pretty_midi)
 import pretty_midi
@@ -150,10 +122,10 @@ def cmert_ckpt(fold):
 
 def midi_ckpt(fold):
     dirs = {
-        7: REPO_MIDI / 'outputs/MIDI_Song_Stratified/22-43-41',
-        2: REPO_MIDI / 'outputs/MIDI_Song_Stratified/22-03-32',
+        7: REPO_MODE / 'weights/midi/MIDI_Song_Stratified/22-43-41',
+        2: REPO_MODE / 'weights/midi/MIDI_Song_Stratified/22-03-32',
     }
-    return dirs[fold] / f'best_model_fold{fold}.pt'
+    return dirs[fold] / f'fold{fold}_best_model.pt'
 
 # ── GT loader ─────────────────────────────────────────────────────────────────
 df_label = pd.read_csv(LABEL_CSV)
@@ -258,14 +230,10 @@ def infer_cmert(seg):
 # ── inference: MIDI ────────────────────────────────────────────────────────────
 def infer_midi(seg):
     pt = midi_ckpt(seg['fold'])
-    midi_cfg_base = OmegaConf.load(REPO_MIDI / 'configs/config.yaml')
-    for key in ['data', 'model', 'train']:
-        sub = OmegaConf.load(REPO_MIDI / f'configs/{key}/{key}.yaml')
-        OmegaConf.update(midi_cfg_base, key, sub, merge=True)
-    mcfg = midi_cfg_base
+    mcfg = OmegaConf.load(REPO_MODE / 'configs/frame/midi.yaml')
 
-    FS         = int(mcfg.data.fs)
-    WIN_FRAMES = int(mcfg.data.window_size * FS)
+    FS         = int(mcfg.dataset.params.fs)
+    WIN_FRAMES = int(mcfg.dataset.params.window * FS)
 
     gen  = PianoRollGenerator(str(seg['midi']), fs=FS)
     roll = torch.tensor(gen.generate_piano_roll(), dtype=torch.float32)  # (128, T_total)
@@ -279,8 +247,7 @@ def infer_midi(seg):
     else:
         slice_roll = slice_roll[:, :WIN_FRAMES]
 
-    model_cfg = mcfg.model
-    model = MidiConv2DGRU(model_cfg)
+    model = mode_models.Conv2DGRU(mcfg.model.params)
     model.load_state_dict(torch.load(pt, map_location=DEV, weights_only=True))
     model.eval().to(DEV)
 

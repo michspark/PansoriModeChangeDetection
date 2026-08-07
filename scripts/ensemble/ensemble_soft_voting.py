@@ -14,7 +14,7 @@ To use custom weights (must sum to 1 across models):
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from paths import MIDI_REPO, REPO_ROOT
+from paths import REPO_ROOT
 
 import argparse
 import numpy as np
@@ -27,7 +27,7 @@ from sklearn.metrics import f1_score
 MODEL_CSVS = {
     'Mel_Separated': REPO_ROOT / 'weights/frame/Verstion_Stratified/0410_Mel_Separated_Version/fold1_posteriorgrams/test_results.csv',
     'Chroma':        REPO_ROOT / 'weights/frame/Verstion_Stratified/0410_Chroma_Version/fold1_posteriorgrams/test_results.csv',
-    'MIDI':          MIDI_REPO / 'outputs/version_st/test_results.csv',
+    'MIDI':          REPO_ROOT / 'weights/midi/MIDI_Version/test_results.csv',
 }
 
 CLASSES = ['우조', '계면조', '아니리', '창조']

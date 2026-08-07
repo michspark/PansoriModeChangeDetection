@@ -10,12 +10,11 @@
 set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PANSORI_MIDI_REPO="${PANSORI_MIDI_REPO:-$REPO_ROOT/../PansoriMIDIDetection}"
 cd "$REPO_ROOT"
 
 MEL_DIR="$REPO_ROOT/weights/frame/Mel_Original_Song_Stratified"
 PESTO_DIR="$REPO_ROOT/weights/frame/Pesto_Song_Stratified"
-MIDI_DIR="$PANSORI_MIDI_REPO/outputs/MIDI_Song_Stratified"
+MIDI_DIR="$REPO_ROOT/weights/midi/MIDI_Song_Stratified"
 OUT_DIR="$REPO_ROOT/outputs/ensemble_song_stratified"
 SLEEP_SEC=15
 

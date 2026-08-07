@@ -13,11 +13,10 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PANSORI_DATA_ROOT="${PANSORI_DATA_ROOT:-$REPO_ROOT/../Pansori_Data}"
-PANSORI_MIDI_REPO="${PANSORI_MIDI_REPO:-$REPO_ROOT/../PansoriMIDIDetection}"
 cd "$REPO_ROOT"
 
 FOLD_DIR="$PANSORI_DATA_ROOT/song_stratified"
-MIDI_DIR="$PANSORI_MIDI_REPO/outputs/MIDI_Song_Stratified"
+MIDI_DIR="$REPO_ROOT/weights/midi/MIDI_Song_Stratified"
 MEL_DIR="$REPO_ROOT/weights/frame/Mel_Original_Song_Stratified"
 PESTO_DIR="$REPO_ROOT/weights/frame/Pesto_Song_Stratified"
 OUT_DIR="$REPO_ROOT/outputs/ensemble_song_stratified"

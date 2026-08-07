@@ -6,7 +6,7 @@ Mel (original) + PESTO (pitch) + MIDI (ROSVOT) soft-voting ensemble.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from paths import DATA_ROOT, MIDI_REPO
+from paths import DATA_ROOT
 import os, json, sys, math
 import numpy as np
 from pathlib import Path
@@ -24,8 +24,7 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 MEL_CKPT  = ROOT / 'weights/frame/Mel_Original_Version/fold1_best_model.pt'
 PESTO_CKPT= ROOT / 'weights/frame/Pesto_Version/fold1_best_model.pt'
-MIDI_CKPT = MIDI_REPO / 'outputs/MIDI_Version/23-43-24/best_model_fold1.pt'
-REPO_MIDI = MIDI_REPO
+MIDI_CKPT = ROOT / 'weights/midi/MIDI_Version/23-43-24/fold1_best_model.pt'
 
 CLASS_NAMES = ['Unknown', '우조', '계면조', '아니리', '창조']
 
@@ -103,27 +102,12 @@ def get_midi_model():
     import torch
     from omegaconf import OmegaConf
 
-    _evicted = {k: v for k, v in sys.modules.items()
-                if k in ('models', 'datasets') or k.startswith(('models.', 'datasets.'))}
-    for k in _evicted:
-        del sys.modules[k]
-    sys.path.insert(0, str(REPO_MIDI))
-    try:
-        from models.model_zoo import Conv2DGRU as MidiModel
-    finally:
-        sys.path.pop(0)
-        for k in list(sys.modules.keys()):
-            if k in ('models', 'datasets') or k.startswith(('models.', 'datasets.')):
-                del sys.modules[k]
-        sys.modules.update(_evicted)
+    import models
 
-    midi_cfg = OmegaConf.load(REPO_MIDI / 'configs/config.yaml')
-    for key in ['data', 'model', 'train']:
-        OmegaConf.update(midi_cfg, key,
-                         OmegaConf.load(REPO_MIDI / f'configs/{key}/{key}.yaml'), merge=True)
+    midi_cfg = OmegaConf.load(ROOT / 'configs/frame/midi.yaml')
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = MidiModel(midi_cfg.model).to(device)
-    state = torch.load(MIDI_CKPT, map_location=device)
+    model = models.Conv2DGRU(midi_cfg.model.params).to(device)
+    state = torch.load(MIDI_CKPT, map_location=device, weights_only=True)
     model.load_state_dict({k.replace('module.', ''): v for k, v in state.items()})
     model.eval()
     print(f'[viewer] midi loaded → {device}')

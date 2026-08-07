@@ -1,9 +1,0 @@
-defaults:
-- data: data
-- model: model
-- train: train
-- _self_
-
-project_name: SoriMidiDetection
-random_seed: 42
-device: cuda

@@ -1,0 +1,15 @@
+dir:
+  midi_dir: /home/sangheon/Desktop/Pansori_Data/rosvot_midi
+  label_path: /home/sangheon/Desktop/Pansori_Data/labels_2.json
+  random_fold_dir: /home/sangheon/Desktop/Pansori_Data/pansori_random_fold
+  song_stratified_dir: /home/sangheon/Desktop/Pansori_Data/song_stratified
+  version_split_dir: /home/sangheon/Desktop/Pansori_Data/pansori_version_split
+
+# "song_stratified" uses song_stratified/ (ch_1/ch_2/...) — 10 folds, 2 per genre
+# "random"          uses pre-existing fold_01.txt ~ fold_10.txt from random_fold_dir
+# "version"         uses pansori_version_split/train.txt|val.txt|test.txt — single fold
+split: version
+
+fs: 10
+window_size: 30
+

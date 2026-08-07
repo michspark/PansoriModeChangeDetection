@@ -1,0 +1,28 @@
+batch_size: 16
+train_mode: iteration  # "iteration" or "epoch"
+num_iterations: 10000   # used when train_mode=iteration
+num_epoch: 150         # used when train_mode=epoch
+epoch_eval_interval: 1
+iter_eval_interval: 200
+save_interval: 1000     # steps (iteration mode) or epochs (epoch mode)
+lr: 5e-4
+
+scheduler:
+  name: ReduceLROnPlateau  # ReduceLROnPlateau | CosineAnnealingLR | null
+  factor: 0.5
+  patience: 10
+  min_lr: 1e-6
+k_folds: 10
+
+# Loss params
+# If alpha=1 gamma=0: FocalLoss -> CrossEntropyLoss
+loss:
+  name: FocalLoss # FocalLoss or CrossEntropyLoss
+  gamma: 2.0
+  ignore_index: 0
+  weights: [0.3, 3.0, 1.0, 1.5, 3.0]
+
+fold: null  # null = run all folds. Set to a fold number (e.g. 8) to run only that fold.
+
+
+
